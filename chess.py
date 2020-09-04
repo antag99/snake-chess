@@ -28,7 +28,7 @@ class Move:
     def rewrite_board_state(self, board_state):
         board_state.set_piece_at(self.from_pos, None)
         if self.captured_pos and self.captured_piece:
-            board_state.set_piece_at(self.captured_pos, self.captured_piece)
+            board_state.set_piece_at(self.captured_pos, None)
         board_state.set_piece_at(self.to_pos, self.moved_piece)
 
 
@@ -61,9 +61,9 @@ class CastlingMove(Move):
         board_state.set_piece_at(self.to_pos, self.moved_piece)
         board_state.set_piece_at(self.rook_pos, None)
         king_x, _ = self.to_pos
-        rook_prev_x = self.rook_pos
-        new_rook_x, new_rook_y = king_x + int(copysign(1, king_x - rook_prev_x))
-        board_state.set_piece_at((new_rook_x, new_rook_y), self.rook_piece)
+        rook_prev_x, rook_y = self.rook_pos
+        new_rook_x = king_x + int(copysign(1, king_x - rook_prev_x))
+        board_state.set_piece_at((new_rook_x, rook_y), self.rook_piece)
 
 
 class Piece:
@@ -110,7 +110,7 @@ class Pawn(Piece):
 
     def get_possible_moves(self, game_state, piece_position):
         possible_moves = []
-        piece = game_state.get_current_board_state().piece_at(piece_position)
+        piece = game_state.piece_at(piece_position)
         piece_x, piece_y = piece_position
 
         forward_1_pos = (piece_x, piece_y + self.direction)
@@ -128,7 +128,7 @@ class Pawn(Piece):
                     if forward_1_is_at_end_of_board:
                         for promoted_piece in [Rook(self.team), Knight(self.team), Bishop(self.team), Queen(self.team)]:
                             possible_moves.append(PawnPromotionMove(from_pos=piece_position,
-                                                                    to_pos=forward_1_pos,
+                                                                    to_pos=attack_pos,
                                                                     moved_piece=piece,
                                                                     captured_pos=attack_pos,
                                                                     captured_piece=attacked_piece,
@@ -139,7 +139,8 @@ class Pawn(Piece):
 
                 en_passant_attack_pos = (piece_x + right_left_dir, piece_y)
                 en_passant_attacked_piece = game_state.get_current_board_state().piece_at(en_passant_attack_pos)
-                if en_passant_attacked_piece is Pawn and game_state.get_history_size() > 0:
+                if en_passant_attacked_piece is not None and en_passant_attacked_piece.symbol == 'P' and \
+                        game_state.get_history_size() > 0:
                     historical_move = game_state.get_historical_move(game_state.get_history_size() - 1)
                     if historical_move.to_pos == en_passant_attack_pos and \
                             abs(historical_move.to_pos[1] - historical_move.from_pos[1]) == 2:
@@ -184,7 +185,7 @@ class SweepingPiece(MoveToAttackedPositionsPiece):
         attacked_positions = []
         (piece_x, piece_y) = piece_position
         for dir_x, dir_y in self.sweep_directions:
-            for n in range(0, 8):
+            for n in range(1, 8):
                 attacked_x, attacked_y = (piece_x + dir_x * n, piece_y + dir_y * n)
                 if attacked_x in range(0, 8) and attacked_y in range(0, 8):
                     attacked_piece = game_state.piece_at((attacked_x, attacked_y))
@@ -259,6 +260,7 @@ class King(MoveToAttackedPositionsPiece):
                 if y + piece_y not in range(0, 8):
                     continue
                 attacked_positions.append((piece_x + x, piece_y + y))
+        return attacked_positions
 
     def _get_castling_moves(self, game_state, piece_position):
         castling_moves = []
@@ -281,7 +283,7 @@ class King(MoveToAttackedPositionsPiece):
             )[self.team]:
                 rook_x, rook_y = rook_pos
                 rook_piece = game_state.piece_at(rook_pos)
-                if rook_piece is not Rook or rook_piece.team != self.team:
+                if rook_piece is None or rook_piece.symbol != 'R' or rook_piece.team != self.team:
                     continue
 
                 has_rook_moved = False
@@ -349,11 +351,10 @@ class GameState:
     def copy(self):
         copy_of_self = GameState()
         copy_of_self._current_board_state = self._current_board_state.copy()
-        copy_of_self._history = self._history
+        copy_of_self._history = list(self._history)
         return copy_of_self
 
-    @property
-    def history_size(self):
+    def get_history_size(self):
         return len(self._history)
 
     def piece_at(self, pos):
@@ -369,41 +370,42 @@ class GameState:
         return self._current_board_state
 
     def get_playing_team(self):
-        return 'WB'[self.history_size % 2]
+        return 'WB'[self.get_history_size() % 2]
 
     def get_non_playing_team(self):
-        return 'BW'[self.history_size % 2]
+        return 'BW'[self.get_history_size() % 2]
 
     def get_squares_attacked_by_team(self, team):
-        pieces = list(filter(lambda _, piece: piece.team == team,
-                             self._current_board_state.get_positions_and_pieces()))
         attacked_squares = []
-        for pos, piece in pieces:
-            attacked_squares += piece.compute_attacked_squares(self._current_board_state, pos)
+        for pos, piece in self._current_board_state.get_positions_and_pieces():
+            if piece.team == team:
+                attacked_squares += piece.get_attacked_positions(self, pos)
         return attacked_squares
 
-
     def _is_legal_outcome_of_last_turn(self):
-        (king_pos, _) = next(filter(lambda pos, piece: piece is King and piece.team == self.get_non_playing_team(),
-                                    self._current_board_state.get_positions_and_pieces()))
+        king_pos = None
+        for pos, piece in self._current_board_state.get_positions_and_pieces():
+            if piece.symbol == 'K' and piece.team == self.get_non_playing_team():
+                king_pos = pos
+                break
+
         attacked_squares = self.get_squares_attacked_by_team(self.get_playing_team())
-        return not any(attacked_square == king_pos for attacked_square in attacked_squares)
+        return king_pos is not None and king_pos not in attacked_squares
 
     def _apply_move(self, move):
         copy = self.copy()
-        copy._history.append(self.History(self, move))
+        copy._history.append(self._History(self._current_board_state, move))
         move.rewrite_board_state(copy._current_board_state)
         return copy
 
     def compute_legal_moves_for_playing_team(self):
-        pieces = list(filter(lambda _, piece: piece.team == self.get_non_playing_team(),
-                             self._current_board_state.get_positions_and_pieces()))
         possible_moves = []
-        for pos, piece in pieces:
-            for possible_move in piece.compute_possible_moves(self._current_board_state, pos):
-                outcome_of_move = self.apply_move(possible_move)
-                if outcome_of_move._is_legal_outcome_of_last_turn():
-                    possible_moves.append((possible_move, outcome_of_move))
+        for pos, piece in self._current_board_state.get_positions_and_pieces():
+            if piece.team == self.get_playing_team():
+                for possible_move in piece.get_possible_moves(self, pos):
+                    outcome_of_move = self._apply_move(possible_move)
+                    if outcome_of_move._is_legal_outcome_of_last_turn():
+                        possible_moves.append((possible_move, outcome_of_move))
         return possible_moves
 
 
@@ -434,7 +436,11 @@ class BoardState:
             row_number += 1
 
     def get_positions_and_pieces(self):
-        return list(self._pieces_by_pos.items())
+        out = []
+        for pos, piece in self._pieces_by_pos.items():
+            if piece is not None:
+                out.append((pos, piece))
+        return out
 
     def set_piece_at(self, pos, piece):
         assert pos in self._pieces_by_pos, f"Coordinates are out of range: {pos}"
