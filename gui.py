@@ -24,7 +24,7 @@ class ChessBoardGui(tk.Frame):
         except KeyError:
             piece = self._game_state.piece_at(pos)
 
-            if piece is not None and piece.team == self._game_state.get_playing_team():
+            if piece is not None and piece.team == self._game_state.playing_team:
                 self._show_possible_moves_for_piece(pos)
             else:
                 self._possible_moves_by_to_pos = dict()
@@ -65,7 +65,7 @@ class ChessBoardGui(tk.Frame):
                 button.grid(column=x, row=7 - y)
                 self._chess_piece_button_by_pos[(x, y)] = button
 
-        self._game_state = chess.GameState()
+        self._game_state = chess.GameState(chess.BoardState.with_initial_material())
         self._reset_square_background_color()
         self._update_chess_piece_images()
 
