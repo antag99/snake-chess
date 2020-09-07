@@ -35,6 +35,12 @@ class Move:
             .copy_with_piece_at(self.to_pos, self.moved_piece)
         return new_board_state
 
+    def __eq__(self, other):
+        return type(self) == type(other) and self.__dict__ == other.__dict__
+
+    def __hash__(self):
+        return hash(frozenset(self.__dict__.items()))
+
 
 class PawnPromotionMove(Move):
     def __init__(self, from_pos, to_pos, moved_piece,
@@ -81,6 +87,15 @@ class Piece:
 
     def __init__(self, team):
         self.team = team
+
+    def __hash__(self):
+        return hash(self.team + self.symbol)
+
+    def __eq__(self, other):
+        return isinstance(other, Piece) and (self.team + self.symbol) == (other.team + other.symbol)
+
+    def team_indicating_letter(self, player_team='W'):
+        return self.symbol.upper() if self.team == player_team else self.symbol.lower()
 
     def get_attacked_positions(self, game_state, piece_position):
         """
@@ -328,19 +343,222 @@ def get_opponent_of(team):
     return "BW"["WB".index(team)]
 
 
+class Act:
+    pass
+
+
+class MoveAct(Act):
+    def __init__(self, move, offer_draw):
+        self.move = move
+        self.offer_draw = offer_draw
+
+
+class ClaimDrawAct(Act):
+    pass
+
+
+class SurrenderAct(Act):
+    pass
+
+
+class Outcome:
+    DRAW = 0
+    MAY_CLAIM_DRAW = 1
+    WHITE_WINS = 2
+    BLACK_WINS = 3
+
+
+class GameEndRule:
+    outcome = None
+
+    def is_applicable(self, game_state):
+        return False
+
+
+class VictoryByCheckmate(GameEndRule):
+    def __init__(self, winning_team):
+        self.winning_team = winning_team
+        self.outcome = dict(W=Outcome.WHITE_WINS, B=Outcome.BLACK_WINS)[winning_team]
+
+    def is_applicable(self, game_state):
+        is_opponent_king_checked = game_state.is_king_checked(get_opponent_of(self.winning_team))
+        has_valid_moves = len(game_state.compute_legal_moves_for_playing_team()) > 0
+        return is_opponent_king_checked and not has_valid_moves and \
+               game_state.playing_team == get_opponent_of(self.winning_team)
+
+
+class DrawByStalemate(GameEndRule):
+    outcome = Outcome.DRAW
+
+    def is_applicable(self, game_state):
+        is_king_checked = game_state.is_king_checked(game_state.playing_team)
+        has_valid_moves = len(game_state.compute_legal_moves_for_playing_team()) > 0
+        return not is_king_checked and not has_valid_moves
+
+
+class RepetitionRule(GameEndRule):
+    num_repetitions = None
+
+    def is_applicable(self, game_state):
+        number_of_occurrences_by_state = dict()
+
+        game_state_cursor = game_state
+        while game_state_cursor:
+            state = (frozenset(game_state_cursor.board_state.positions_and_pieces),
+                     game_state_cursor.playing_team,
+                     frozenset(game_state_cursor.compute_legal_moves_for_playing_team()))
+            try:
+                number_of_occurrences_by_state[state] += 1
+            except KeyError:
+                number_of_occurrences_by_state[state] = 1
+            game_state_cursor = game_state_cursor.previous_state
+
+        return any(n >= self.num_repetitions for _, n in number_of_occurrences_by_state.items())
+
+
+class DrawClaimableByThreefoldRepetition(RepetitionRule):
+    outcome = Outcome.MAY_CLAIM_DRAW
+    num_repetitions = 3
+
+
+class DrawByFivefoldRepetition(RepetitionRule):
+    outcome = Outcome.DRAW
+    num_repetitions = 5
+
+
+class NoPawnMoveOrCaptureRule(GameEndRule):
+    num_turns = None
+
+    def _is_pawn_move_or_piece_capture(self, move):
+        return move.moved_piece.symbol == 'P' or move.captured_piece is not None
+
+    def is_applicable(self, game_state):
+        n_moves_without_capture_or_pawn_move = 0
+
+        game_state_cursor = game_state
+        while game_state_cursor:
+            if game_state_cursor.last_move is not None and \
+                    not self._is_pawn_move_or_piece_capture(game_state_cursor.last_move):
+                n_moves_without_capture_or_pawn_move += 1
+            game_state_cursor = game_state_cursor.previous_state
+
+        return n_moves_without_capture_or_pawn_move >= self.num_turns * 2
+
+
+class DrawClaimableByFiftyMoveRule(GameEndRule):
+    outcome = Outcome.MAY_CLAIM_DRAW
+    num_turns = 50
+
+
+class DrawBySeventyFiveMoveRule(GameEndRule):
+    outcome = Outcome.DRAW
+    num_turns = 75
+
+
+class DrawByInsufficientMaterial(GameEndRule):
+    outcome = Outcome.DRAW
+
+    @staticmethod
+    def _bishops_on_same_color(game_state):
+        return len(set((pos[0] + pos[1]) % 2 for pos, piece in game_state.board_state.positions_and_pieces
+                       if piece.symbol == 'B')) == 1
+
+    def is_applicable(self, game_state):
+        # these scenarios are easy to determine - more complex scenarios (no sequence of legal moves that leads to
+        # checkmate) are typically decided by the arbiter, and decisions like that are way out of scope for this
+        # software.
+        pieces = [piece for _, piece in game_state.board_state.positions_and_pieces]
+        pieces_w = set(p.symbol for p in pieces if p.team == 'W')
+        pieces_b = set(p.symbol for p in pieces if p.team == 'B')
+
+        return any([
+            len(pieces) == 2,  # king versus king
+            len(pieces) == 3 and {pieces_w, pieces_b} == {{'K', 'N'}, {'K'}},  # king and knight versus king
+            len(pieces) == 3 and {pieces_w, pieces_b} == {{'K', 'B'}, {'K'}},  # king and bishop versus king
+            len(pieces) == 4 and {pieces_w, pieces_b} == {{'K', 'B'}, {'K', 'B'}}
+            and DrawByInsufficientMaterial._bishops_on_same_color(game_state)
+            # king and bishop versus king and bishop, on same color
+        ])
+
+
+class DrawClaimableByOffer(GameEndRule):
+    outcome = Outcome.MAY_CLAIM_DRAW
+
+    def is_applicable(self, game_state):
+        return game_state.last_act is MoveAct and game_state.last_act.offer_draw
+
+
+class VictoryByOpponentSurrender(GameEndRule):
+    def __init__(self, team):
+        self.team = team
+        self.outcome = dict(W=Outcome.WHITE_WINS, B=Outcome.BLACK_WINS)
+
+    def is_applicable(self, game_state):
+        return game_state.last_act is SurrenderAct and game_state.get_playing_team() == self.team
+
+
+class GameResult:
+    def __init__(self,
+                 game_state):
+        self.ended_by_rule = None
+        self.may_claim_draw_by_rule = None
+        if game_state.last_act is ClaimDrawAct:
+            self.ended_by_rule = game_state.previous_state.may_claim_draw_by_rule
+        else:
+            try:
+                self.ended_by_rule = next(rule for rule in game_state.game_end_rules
+                                          if rule.is_applicable(game_state) and rule.outcome != Outcome.MAY_CLAIM_DRAW)
+            except StopIteration:
+                pass
+
+            try:
+                self.may_claim_draw_by_rule = next(rule for rule in game_state.game_end_rules
+                                                   if rule.is_applicable(game_state) and \
+                                                   rule.outcome == Outcome.MAY_CLAIM_DRAW)
+            except StopIteration:
+                pass
+
+        self.is_finished = self.ended_by_rule is not None
+        self.may_claim_draw = not self.is_finished and self.may_claim_draw_by_rule is not None
+
+        if self.may_claim_draw and game_state.last_act is MoveAct and game_state.last_act.offer_draw:
+            self.is_finished = True
+            self.ended_by_rule = self.may_claim_draw_by_rule
+            self.may_claim_draw = False
+            self.may_claim_draw_by_rule = None
+
+
 class GameState:
+
+    game_end_rules = [
+        VictoryByOpponentSurrender('W'),
+        VictoryByOpponentSurrender('B'),
+        VictoryByCheckmate('W'),
+        VictoryByCheckmate('B'),
+        DrawByStalemate(),
+        DrawByFivefoldRepetition(),
+        DrawBySeventyFiveMoveRule(),
+        DrawByInsufficientMaterial(),
+        DrawClaimableByThreefoldRepetition(),
+        DrawClaimableByFiftyMoveRule(),
+        DrawClaimableByOffer(),
+    ]
 
     def __init__(self,
                  board_state,
                  previous_state=None,
-                 last_move=None):
+                 last_act=None):
         assert board_state is not None
-        assert (previous_state is None) == (last_move is None)
+        assert (previous_state is None) == (last_act is None)
         self.board_state = board_state
         self.previous_state = previous_state
-        self.last_move = last_move
+        self.last_act = last_act
+        self.last_move = None if last_act is None or last_act is not MoveAct else last_act.move
         self.history_size = 0 if self.previous_state is None else 1 + self.previous_state.history_size
         self.playing_team = 'WB'[self.history_size % 2]
+
+    def compute_result(self):
+        return GameResult(self)
 
     def piece_at(self, pos):
         return self.board_state.piece_at(pos)
@@ -356,27 +574,28 @@ class GameState:
                 attacked_squares += piece.get_attacked_positions(self, pos)
         return attacked_squares
 
-    def _is_king_checked(self, king_team):
-        king_pos = None
-        for pos, piece in self.board_state.positions_and_pieces:
-            if piece.symbol == 'K' and piece.team == king_team:
-                king_pos = pos
-                break
+    def is_king_checked(self, king_team):
+        try:
+            king_pos = next(pos for pos, piece in self.board_state.positions_and_pieces
+                            if piece.symbol == 'K' and piece.team == king_team)
+            return king_pos in self.get_squares_attacked_by_team(get_opponent_of(king_team))
+        except StopIteration:  # king was unexpectedly not found, impossible situation
+            return True
 
-        attacked_squares = self.get_squares_attacked_by_team(get_opponent_of(king_team))
-        return king_pos is None or king_pos in attacked_squares
-
-    def copy_with_move_applied(self, move):
-        return GameState(move.compute_over_board_state(self.board_state), self, move)
+    def copy_with_act_applied(self, act):
+        board_state = self.board_state
+        if type(act) == MoveAct:
+            board_state = act.move.compute_over_board_state(board_state)
+        return GameState(board_state, self, act)
 
     def compute_legal_moves_for_playing_team(self):
         possible_moves = []
         for pos, piece in self.board_state.positions_and_pieces:
             if piece.team == self.playing_team:
                 for possible_move in piece.get_possible_moves(self, pos):
-                    outcome_of_move = self.copy_with_move_applied(possible_move)
-                    if not outcome_of_move._is_king_checked(get_opponent_of(outcome_of_move.playing_team)):
-                        possible_moves.append((possible_move, outcome_of_move))
+                    outcome_of_move = self.copy_with_act_applied(MoveAct(possible_move, False))
+                    if not outcome_of_move.is_king_checked(get_opponent_of(outcome_of_move.playing_team)):
+                        possible_moves.append(possible_move)
         return possible_moves
 
 
@@ -392,25 +611,28 @@ class BoardState:
     @staticmethod
     def with_initial_material():
         board_with_initial_material = BoardState.empty()
-        piece_constructor_by_symbol = dict(piece_class_by_symbol)
-        piece_constructor_by_symbol[' '] = lambda _: None
-        row_number = 0
-        for row in ['RNBQKBNR',
-                    'PPPPPPPP',
-                    '        ',
-                    '        ',
-                    '        ',
-                    '        ',
-                    'PPPPPPPP',
-                    'RNBKQBNR']:
+        piece_by_symbol = dict()
+        piece_by_symbol['.'] = None
+        for symbol, piece_class in piece_class_by_symbol.items():
+            piece_by_symbol[symbol.upper()] = piece_class('W')
+            piece_by_symbol[symbol.lower()] = piece_class('B')
+        row_number = 7
+        for row in """
+        rnbqkbnr
+        pppppppp
+        ........
+        ........
+        ........
+        ........
+        PPPPPPPP
+        RNBQKBNR
+        """.strip().splitlines():
             column_number = 0
-            for piece in row:
-                piece_team = 'W' if row_number <= 4 else 'B'
+            for piece in row.strip():
                 board_with_initial_material = board_with_initial_material.copy_with_piece_at(
-                    (column_number, row_number),
-                    piece_constructor_by_symbol[piece](piece_team))
+                    (column_number, row_number), piece_by_symbol[piece])
                 column_number += 1
-            row_number += 1
+            row_number -= 1
         return board_with_initial_material
 
     def copy_with_piece_at(self, pos, piece):
@@ -422,3 +644,10 @@ class BoardState:
     def piece_at(self, pos):
         assert pos in self.piece_by_pos, f"Coordinates are out of range: {pos}"
         return self.piece_by_pos[pos]
+
+    def __str__(self) -> str:
+        out = []
+        for y in range(0, 8):
+            out.append(" ".join([self.piece_at((x, 7 - y)) and self.piece_at((x, 7 - y)).team_indicating_letter()
+                                or "." for x in range(0, 8)]))
+        return "\n".join(out)

@@ -16,11 +16,9 @@ class ChessBoardGui(tk.Frame):
 
         try:
             moves_to_clicked_position = self._possible_moves_by_to_pos[pos]
-            move_0, outcome = moves_to_clicked_position[0]
-            self._game_state = outcome
-            self._reset_square_background_color()
-            self._update_chess_piece_images()
-            self._possible_moves_by_to_pos = dict()
+            move = moves_to_clicked_position[0]
+            self._game_state = self._game_state.copy_with_act_applied(chess.MoveAct(move, False))
+            self._enter_turn()
         except KeyError:
             piece = self._game_state.piece_at(pos)
 
@@ -55,7 +53,6 @@ class ChessBoardGui(tk.Frame):
             )
         )
 
-        self._possible_moves_by_to_pos = dict()
         self._chess_piece_button_by_pos = dict()
 
         for x in range(0, 8):
@@ -66,8 +63,22 @@ class ChessBoardGui(tk.Frame):
                 self._chess_piece_button_by_pos[(x, y)] = button
 
         self._game_state = chess.GameState(chess.BoardState.with_initial_material())
+        self._enter_turn()
+
+    def _enter_turn(self):
+        print(self._game_state.board_state)
+        self._possible_moves_by_to_pos = dict()
         self._reset_square_background_color()
         self._update_chess_piece_images()
+
+        print(dict(W="white", B="black")[self._game_state.playing_team] + " moves")
+
+        self.result = self._game_state.compute_result()
+        if self.result.is_finished:
+            print("game is finished, finished by rule", self.result.ended_by_rule)
+
+        if self.result.may_claim_draw:
+            print("may claim draw by rule", self.result.may_claim_draw_by_rule)
 
     def _set_square_background_color(self, pos, bg_color):
         button = self._chess_piece_button_by_pos[pos]
@@ -96,13 +107,13 @@ class ChessBoardGui(tk.Frame):
 
         self._possible_moves_by_to_pos = dict()
 
-        for move, outcome in all_possible_moves:
+        for move in all_possible_moves:
             if move.from_pos == pos:
                 try:
                     moves_by_to_pos = self._possible_moves_by_to_pos[move.to_pos]
                     moves_by_to_pos.append(move)
                 except KeyError:
-                    moves_by_to_pos = [(move, outcome)]
+                    moves_by_to_pos = [move]
                     self._possible_moves_by_to_pos[move.to_pos] = moves_by_to_pos
                 self._set_square_background_color(move.to_pos, "blue")
 
