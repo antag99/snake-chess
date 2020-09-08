@@ -609,7 +609,7 @@ class BoardState:
         return BoardState(dict([((x, y), None) for x in range(0, 8) for y in range(0, 8)]))
 
     @staticmethod
-    def with_initial_material():
+    def from_notation(notation):
         board_with_initial_material = BoardState.empty()
         piece_by_symbol = dict()
         piece_by_symbol['.'] = None
@@ -617,7 +617,18 @@ class BoardState:
             piece_by_symbol[symbol.upper()] = piece_class('W')
             piece_by_symbol[symbol.lower()] = piece_class('B')
         row_number = 7
-        for row in """
+        for row in notation.replace(' ', '').strip().splitlines():
+            column_number = 0
+            for piece in row.strip():
+                board_with_initial_material = board_with_initial_material.copy_with_piece_at(
+                    (column_number, row_number), piece_by_symbol[piece])
+                column_number += 1
+            row_number -= 1
+        return board_with_initial_material
+
+    @staticmethod
+    def with_initial_material():
+        return BoardState.from_notation("""
         rnbqkbnr
         pppppppp
         ........
@@ -626,14 +637,7 @@ class BoardState:
         ........
         PPPPPPPP
         RNBQKBNR
-        """.strip().splitlines():
-            column_number = 0
-            for piece in row.strip():
-                board_with_initial_material = board_with_initial_material.copy_with_piece_at(
-                    (column_number, row_number), piece_by_symbol[piece])
-                column_number += 1
-            row_number -= 1
-        return board_with_initial_material
+        """)
 
     def copy_with_piece_at(self, pos, piece):
         assert pos in self.piece_by_pos, f"Coordinates are out of range: {pos}"
