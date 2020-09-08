@@ -553,7 +553,7 @@ class GameState:
         self.board_state = board_state
         self.previous_state = previous_state
         self.last_act = last_act
-        self.last_move = None if last_act is None or last_act is not MoveAct else last_act.move
+        self.last_move = None if last_act is None or not isinstance(last_act, MoveAct) else last_act.move
         self.history_size = 0 if self.previous_state is None else 1 + self.previous_state.history_size
         self.playing_team = 'WB'[self.history_size % 2]
 
