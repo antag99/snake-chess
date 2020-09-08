@@ -126,7 +126,7 @@ class Pawn(Piece):
     def get_attacked_positions(self, game_state, piece_position):
         piece_x, piece_y = piece_position
         attacked_positions = []
-        if piece_y + self.direction in range(0, 7):
+        if piece_y + self.direction in range(0, 8):
             if piece_x - 1 > 0:
                 attacked_positions.append((piece_x - 1, piece_y + self.direction))
             if piece_x + 1 < 8:
