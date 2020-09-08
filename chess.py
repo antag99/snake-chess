@@ -468,14 +468,14 @@ class DrawByInsufficientMaterial(GameEndRule):
         # checkmate) are typically decided by the arbiter, and decisions like that are way out of scope for this
         # software.
         pieces = [piece for _, piece in game_state.board_state.positions_and_pieces]
-        pieces_w = set(p.symbol for p in pieces if p.team == 'W')
-        pieces_b = set(p.symbol for p in pieces if p.team == 'B')
+        pieces_w = frozenset(p.symbol for p in pieces if p.team == 'W')
+        pieces_b = frozenset(p.symbol for p in pieces if p.team == 'B')
 
         return any([
             len(pieces) == 2,  # king versus king
-            len(pieces) == 3 and {pieces_w, pieces_b} == {{'K', 'N'}, {'K'}},  # king and knight versus king
-            len(pieces) == 3 and {pieces_w, pieces_b} == {{'K', 'B'}, {'K'}},  # king and bishop versus king
-            len(pieces) == 4 and {pieces_w, pieces_b} == {{'K', 'B'}, {'K', 'B'}}
+            len(pieces) == 3 and {pieces_w, pieces_b} == {frozenset(['K', 'N']), frozenset(['K'])},  # king and knight versus king
+            len(pieces) == 3 and {pieces_w, pieces_b} == {frozenset(['K', 'B']), frozenset(['K'])},  # king and bishop versus king
+            len(pieces) == 4 and pieces_w == frozenset(['K', 'B']) and pieces_w == pieces_b
             and DrawByInsufficientMaterial._bishops_on_same_color(game_state)
             # king and bishop versus king and bishop, on same color
         ])
