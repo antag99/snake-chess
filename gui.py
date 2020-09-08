@@ -5,13 +5,24 @@
 # that page.
 
 import chess
+import ai
 
 import functools
 import tkinter as tk
 
 
+class ChessPlayer:
+    HUMAN_PLAYER = 0
+    RANDOM_MOVE_AI = 1
+    PAWNS_AND_QUEENS_AI = 2
+
+
 class ChessBoardGui(tk.Frame):
     def _chess_piece_clicked(self, x, y):
+        current_player = self._player_by_team[self._game_state.playing_team]
+        if self.result.is_finished or current_player != ChessPlayer.HUMAN_PLAYER:
+            return
+
         pos = (x, y)
 
         try:
@@ -53,32 +64,63 @@ class ChessBoardGui(tk.Frame):
             )
         )
 
+        self._chess_piece_button_by_ui_grid_pos = dict()
         self._chess_piece_button_by_pos = dict()
 
         for x in range(0, 8):
             for y in range(0, 8):
                 button = tk.Button(self, image=self.empty_image)
-                button['command'] = functools.partial(self._chess_piece_clicked, x, y)
-                button.grid(column=x, row=7 - y)
-                self._chess_piece_button_by_pos[(x, y)] = button
+                button.grid(column=x, row=y)
+                self._chess_piece_button_by_ui_grid_pos[(x, y)] = button
+
+        self._random_move_ai_player = ai.RandomMoveAIPlayer()
+        self._pawns_and_queens_ai_player = ai.PawnsAndQueensAIPlayer()
+
+        self._player_by_team = dict(
+            W=ChessPlayer.PAWNS_AND_QUEENS_AI,
+            B=ChessPlayer.RANDOM_MOVE_AI
+        )
 
         self._game_state = chess.GameState(chess.BoardState.with_initial_material())
+        self._set_view_orientation('W')
         self._enter_turn()
 
     def _enter_turn(self):
-        print(self._game_state.board_state)
-        self._possible_moves_by_to_pos = dict()
-        self._reset_square_background_color()
-        self._update_chess_piece_images()
+        while True:
+            self.result = self._game_state.compute_result()
 
-        print(dict(W="white", B="black")[self._game_state.playing_team] + " moves")
+            if self.result.may_claim_draw:
+                print("may claim draw by rule", self.result.may_claim_draw_by_rule)
 
-        self.result = self._game_state.compute_result()
-        if self.result.is_finished:
-            print("game is finished, finished by rule", self.result.ended_by_rule)
+            if self.result.is_finished:
+                print("game is finished, finished by rule", self.result.ended_by_rule)
+                break
 
-        if self.result.may_claim_draw:
-            print("may claim draw by rule", self.result.may_claim_draw_by_rule)
+            print(self._game_state.board_state)
+            print(dict(W="white", B="black")[self._game_state.playing_team] + " moves")
+            current_player = self._player_by_team[self._game_state.playing_team]
+
+            if current_player == ChessPlayer.HUMAN_PLAYER:
+                self._set_view_orientation(self._game_state.playing_team)
+                self._possible_moves_by_to_pos = dict()
+                self._reset_square_background_color()
+                self._update_chess_piece_images()
+                break
+            else:
+                ai_player = dict()
+                ai_player[ChessPlayer.RANDOM_MOVE_AI] = self._random_move_ai_player
+                ai_player[ChessPlayer.PAWNS_AND_QUEENS_AI] = self._pawns_and_queens_ai_player
+                self._game_state = self._game_state.copy_with_act_applied(ai_player[current_player]
+                                                                          .pick_act(self._game_state))
+                self._possible_moves_by_to_pos = dict()
+                self._reset_square_background_color()
+                self._update_chess_piece_images()
+
+    def _set_view_orientation(self, view_of_team):
+        for x in range(0, 8):
+            for y in range(0, 8):
+                self._chess_piece_button_by_pos[(x, 7 - y if view_of_team == 'W' else y)] =\
+                    self._chess_piece_button_by_ui_grid_pos[(x, y)]
 
     def _set_square_background_color(self, pos, bg_color):
         button = self._chess_piece_button_by_pos[pos]
@@ -94,6 +136,7 @@ class ChessBoardGui(tk.Frame):
             for y in range(0, 8):
                 pos = (x, y)
                 button = self._chess_piece_button_by_pos[pos]
+                button['command'] = functools.partial(self._chess_piece_clicked, x, y)
                 piece = self._game_state.piece_at(pos)
                 piece_image = self.piece_images_by_team_and_symbol[piece.team][piece.symbol] \
                     if piece is not None else self.empty_image

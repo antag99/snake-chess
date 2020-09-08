@@ -527,6 +527,9 @@ class GameResult:
             self.may_claim_draw = False
             self.may_claim_draw_by_rule = None
 
+    @property
+    def outcome(self):
+        return self.is_finished and self.ended_by_rule.outcome or None
 
 class GameState:
 
@@ -567,10 +570,12 @@ class GameState:
     def historical_moves(self):
         return ([self.last_move] + self.previous_state.historical_moves) if self.last_move is not None else []
 
-    def get_squares_attacked_by_team(self, team):
+    def get_squares_attacked_by_team(self,
+                                     team,
+                                     allowed_pieces=None):
         attacked_squares = []
         for pos, piece in self.board_state.positions_and_pieces:
-            if piece.team == team:
+            if piece.team == team and (allowed_pieces is None or piece.symbol in allowed_pieces):
                 attacked_squares += piece.get_attacked_positions(self, pos)
         return attacked_squares
 
@@ -594,7 +599,7 @@ class GameState:
             if piece.team == self.playing_team:
                 for possible_move in piece.get_possible_moves(self, pos):
                     outcome_of_move = self.copy_with_act_applied(MoveAct(possible_move, False))
-                    if not outcome_of_move.is_king_checked(get_opponent_of(outcome_of_move.playing_team)):
+                    if not outcome_of_move.is_king_checked(self.playing_team):
                         possible_moves.append(possible_move)
         return possible_moves
 
