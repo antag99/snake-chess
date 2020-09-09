@@ -20,6 +20,7 @@ class RandomMoveAIPlayer(AIPlayer):
             return SurrenderAct()
         return MoveAct(legal_moves[self.random.randrange(len(legal_moves))], False)
 
+
 PIECE_VALUES = dict(P=1, R=5, N=3, B=3, Q=9, K=0)
 
 
@@ -47,11 +48,6 @@ class MoveScorer:
             return -1000 if result.outcome == Outcome.DRAW else 1000
 
         if move.moved_piece.symbol == 'P':
-            # Pawn prio list:
-            # 1. checkmate
-            # 2. pawn promotion, choosing queen and capturing the most valuable enemy piece
-            # 3. capturing the most valuable enemy piece
-            # 4. moving 2 steps, only one step if not allowed to move further
             if isinstance(move, PawnPromotionMove):
                 return 100 + (PIECE_VALUES[move.captured_piece.symbol] if move.captured_piece else 0) + \
                     PIECE_VALUES[move.promoted_piece.symbol]
@@ -59,13 +55,6 @@ class MoveScorer:
                 return 10 + PIECE_VALUES[move.captured_piece.symbol]
             return 1 + abs(move.to_pos[1] - move.from_pos[1])
         elif move.moved_piece.symbol == 'Q':
-
-            # Queen prio list:
-            # 1. checkmate
-            # 2. pawn promotion, choosing queen and capturing the most valuable enemy piece
-            # 3. capturing the most valuable enemy piece
-            # 4. moving 2 steps, only one step if not allowed to move further
-
             under_attack_by_enemy_pieces = game_state_after.get_squares_attacked_by_team(self.enemy_team,
                                                                                          "PRNBQ")
             under_attack_by_enemy_king = game_state_after.get_squares_attacked_by_team(self.enemy_team,
@@ -103,29 +92,8 @@ class PawnsAndQueensAIPlayer(AIPlayer):
         self.random = Random()
         self.pool = Pool(8)
 
-    @staticmethod
-    def _count_enemy_material(game_state):
-        return sum(PIECE_VALUES[piece.symbol]
-             for _, piece in game_state.board_state.positions_and_pieces
-             if piece.team == game_state.playing_team)
-
-    @staticmethod
-    def _score_outcome(game_state):
-        result = game_state.compute_result()
-        if result.is_finished:
-            if result.outcome == Outcome.DRAW:
-                return -1000
-            else:
-                return 1
-        return -PawnsAndQueensAIPlayer._count_enemy_material(game_state)
-
-    @staticmethod
-    def _score_act(game_state, act):
-        return act, PawnsAndQueensAIPlayer._score_outcome(game_state.copy_with_act_applied(act))
-
     def pick_act(self, game_state):
         ai_team = game_state.playing_team
-        enemy_team = get_opponent_of(ai_team)
 
         all_pieces = list(game_state.board_state.positions_and_pieces)
         my_pieces = [(pos, piece) for pos, piece in all_pieces if piece.team == ai_team]
