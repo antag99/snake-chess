@@ -16,32 +16,121 @@ class ChessPlayer:
     RANDOM_MOVE_AI = 1
     PAWNS_AND_QUEENS_AI = 2
 
+    def enter_turn(self, arbiter):
+        pass
 
-class ChessBoardGui(tk.Frame):
-    def _chess_piece_clicked(self, x, y):
-        current_player = self._player_by_team[self._game_state.playing_team]
-        if self.result.is_finished or current_player != ChessPlayer.HUMAN_PLAYER:
-            return
+    def acknowledge_act(self, arbiter):
+        pass
 
-        pos = (x, y)
+    def report_result(self, arbiter, result):
+        pass
 
-        try:
-            moves_to_clicked_position = self._possible_moves_by_to_pos[pos]
-            move = moves_to_clicked_position[0]
-            self._game_state = self._game_state.copy_with_act_applied(chess.MoveAct(move, False))
-            self._enter_turn()
-        except KeyError:
-            piece = self._game_state.piece_at(pos)
 
-            if piece is not None and piece.team == self._game_state.playing_team:
-                self._show_possible_moves_for_piece(pos)
-            else:
-                self._possible_moves_by_to_pos = dict()
-                self._reset_square_background_color()
+import threading
 
-    def __init__(self):
-        super().__init__()
 
+class AIChessPlayer(ChessPlayer):
+    def __init__(self, ai_player):
+        self.ai_player = ai_player
+        self.ai_waiting_thread = None
+
+    def _enter_turn_in_separate_thread(self, arbiter):
+        act = self.ai_player.pick_act(arbiter.game_state)
+        arbiter.select_act(act)
+
+    def enter_turn(self, arbiter):
+        target = functools.partial(self._enter_turn_in_separate_thread, arbiter)
+        self.ai_waiting_thread = threading.Thread(group=None,
+                                                  target=target,
+                                                  name=None,
+                                                  daemon=True)
+        self.ai_waiting_thread.start()
+
+    def acknowledge_act(self, arbiter):
+        pass
+
+    def report_result(self, arbiter, result):
+        pass
+
+
+class ViewOfChessPlayer(ChessPlayer):
+    """
+    Wraps a ChessPlayer and updates a ChessBoardView to the player's view of the game
+    """
+
+    def __init__(self, view, player):
+        self.view = view
+        self.player = player
+
+    def enter_turn(self, arbiter):
+        self.view.game_state = arbiter.game_state
+        self.view.set_to_view_of_team(arbiter.game_state.playing_team)
+        self.player.enter_turn(arbiter)
+
+    def acknowledge_act(self, arbiter):
+        self.view.game_state = arbiter.game_state
+        self.player.acknowledge_act(arbiter)
+
+    def report_result(self, arbiter, result):
+        self.view.game_state = arbiter.game_state
+        self.player.report_result(arbiter, result)
+
+
+class LocalHumanChessPlayer(ChessPlayer):
+
+    def __init__(self, view):
+        self.view = view
+
+    @staticmethod
+    def _move_selection_handler(arbiter, move):
+        arbiter.select_act(chess.MoveAct(move, False))
+
+    def enter_turn(self, arbiter):
+        self.view.allow_move_selection = True
+        self.view.move_selection_handler = functools.partial(self._move_selection_handler, arbiter)
+
+    def acknowledge_act(self, arbiter):
+        self.view.allow_move_selection = False
+        self.view.reset_move_selection()
+
+    def report_result(self, arbiter, result):
+        pass
+
+
+class Arbiter:
+    def __init__(self, player_white, player_black):
+        self.game_state = None
+        self.players = dict(W=player_white, B=player_black)
+
+    def start_game(self):
+        self.game_state = chess.GameState(chess.BoardState.with_initial_material())
+        self.players[self.game_state.playing_team].enter_turn(self)
+
+    def select_act(self, act):
+        if isinstance(act, chess.MoveAct):
+            is_legal_act = act.move in self.game_state.compute_legal_moves_for_playing_team()
+        elif isinstance(act, chess.ClaimDrawAct):
+            is_legal_act = self.game_state.comput_result().may_claim_draw
+        else:
+            is_legal_act = True
+
+        if is_legal_act:  # check that acts players try to perform are legal.
+            player = self.players[self.game_state.playing_team]
+            self.game_state = self.game_state.copy_with_act_applied(act)
+            player.acknowledge_act(self)  # notify the player we accept his move
+
+        result = self.game_state.compute_result()
+        if result.is_finished:
+            for player in self.players.values():
+                player.report_result(self, result)
+        else:  # time for current player to make a move - this also happens
+            self.players[self.game_state.playing_team].enter_turn(self)
+
+
+class ChessBoardView(tk.Frame):
+
+    def __init__(self, parent):
+        super(ChessBoardView, self).__init__(parent)
         # Note that Tkinter PhotoImage's are garbage collected even if they are needed for active widgets, it is
         # mandatory to keep a reference to them for the lifetime of the widget.
         self.empty_image = tk.PhotoImage(file="icons/empty.png")
@@ -73,71 +162,71 @@ class ChessBoardGui(tk.Frame):
                 button.grid(column=x, row=y)
                 self._chess_piece_button_by_ui_grid_pos[(x, y)] = button
 
-        self._random_move_ai_player = ai.RandomMoveAIPlayer()
-        self._pawns_and_queens_ai_player = ai.PawnsAndQueensAIPlayer()
+        self.allow_move_selection = False
+        self.move_selection_handler = None
+        self._game_state = None
 
-        self._player_by_team = dict(
-            W=ChessPlayer.PAWNS_AND_QUEENS_AI,
-            B=ChessPlayer.RANDOM_MOVE_AI
-        )
+        self.set_to_view_of_team('W')
+        self._possible_moves_by_to_pos = dict()
+        self._reset_square_colors()
 
-        self._game_state = chess.GameState(chess.BoardState.with_initial_material())
-        self._set_view_orientation('W')
-        self._enter_turn()
+    @property
+    def game_state(self):
+        return self._game_state
 
-    def _enter_turn(self):
-        while True:
-            self.result = self._game_state.compute_result()
+    @game_state.setter
+    def game_state(self, game_state):
+        self._game_state = game_state
+        self._update_chess_piece_images()
 
-            if self.result.may_claim_draw:
-                print("may claim draw by rule", self.result.may_claim_draw_by_rule)
+    def _on_board_square_click(self, x, y):
+        if not self.allow_move_selection or self.game_state is None:
+            return
 
-            if self.result.is_finished:
-                print("game is finished, finished by rule", self.result.ended_by_rule)
-                break
+        pos = (x, y)
 
-            print(self._game_state.board_state)
-            print(dict(W="white", B="black")[self._game_state.playing_team] + " moves")
-            current_player = self._player_by_team[self._game_state.playing_team]
+        try:
+            moves_to_clicked_position = self._possible_moves_by_to_pos[pos]
+            move = moves_to_clicked_position[0]
 
-            if current_player == ChessPlayer.HUMAN_PLAYER:
-                self._set_view_orientation(self._game_state.playing_team)
-                self._possible_moves_by_to_pos = dict()
-                self._reset_square_background_color()
-                self._update_chess_piece_images()
-                break
+            if self.move_selection_handler is not None:
+                self.move_selection_handler(move)
+        except KeyError:
+            piece = self.game_state.piece_at(pos)
+
+            if piece is not None and piece.team == self.game_state.playing_team:
+                self._show_possible_moves_for_piece(pos)
             else:
-                ai_player = dict()
-                ai_player[ChessPlayer.RANDOM_MOVE_AI] = self._random_move_ai_player
-                ai_player[ChessPlayer.PAWNS_AND_QUEENS_AI] = self._pawns_and_queens_ai_player
-                self._game_state = self._game_state.copy_with_act_applied(ai_player[current_player]
-                                                                          .pick_act(self._game_state))
-                self._possible_moves_by_to_pos = dict()
-                self._reset_square_background_color()
-                self._update_chess_piece_images()
+                self.reset_move_selection()
 
-    def _set_view_orientation(self, view_of_team):
+    def _set_square_color(self, pos, bg_color):
+        button = self._chess_piece_button_by_pos[pos]
+        button['background'] = bg_color
+
+    def _reset_square_colors(self):
+        for x in range(0, 8):
+            for y in range(0, 8):
+                self._set_square_color((x, y), "orange" if (x + y) % 2 == 0 else "red")
+
+    def reset_move_selection(self):
+        self._possible_moves_by_to_pos.clear()
+        self._reset_square_colors()
+
+    def set_to_view_of_team(self, view_of_team):
         for x in range(0, 8):
             for y in range(0, 8):
                 self._chess_piece_button_by_pos[(x, 7 - y if view_of_team == 'W' else y)] =\
                     self._chess_piece_button_by_ui_grid_pos[(x, y)]
-
-    def _set_square_background_color(self, pos, bg_color):
-        button = self._chess_piece_button_by_pos[pos]
-        button['background'] = bg_color
-
-    def _reset_square_background_color(self):
-        for x in range(0, 8):
-            for y in range(0, 8):
-                self._set_square_background_color((x, y), "orange" if (x + y) % 2 == 0 else "red")
+        self._reset_square_colors()
+        self._update_chess_piece_images()
 
     def _update_chess_piece_images(self):
         for x in range(0, 8):
             for y in range(0, 8):
                 pos = (x, y)
                 button = self._chess_piece_button_by_pos[pos]
-                button['command'] = functools.partial(self._chess_piece_clicked, x, y)
-                piece = self._game_state.piece_at(pos)
+                button['command'] = functools.partial(self._on_board_square_click, x, y)
+                piece = self.game_state and self.game_state.piece_at(pos)
                 piece_image = self.piece_images_by_team_and_symbol[piece.team][piece.symbol] \
                     if piece is not None else self.empty_image
                 button['image'] = piece_image
@@ -145,10 +234,9 @@ class ChessBoardGui(tk.Frame):
         self.pack()
 
     def _show_possible_moves_for_piece(self, pos):
-        self._reset_square_background_color()
-        all_possible_moves = self._game_state.compute_legal_moves_for_playing_team()
+        self.reset_move_selection()
 
-        self._possible_moves_by_to_pos = dict()
+        all_possible_moves = self.game_state.compute_legal_moves_for_playing_team()
 
         for move in all_possible_moves:
             if move.from_pos == pos:
@@ -158,10 +246,31 @@ class ChessBoardGui(tk.Frame):
                 except KeyError:
                     moves_by_to_pos = [move]
                     self._possible_moves_by_to_pos[move.to_pos] = moves_by_to_pos
-                self._set_square_background_color(move.to_pos, "blue")
+                self._set_square_color(move.to_pos, "blue")
+
+
+class ChessBoardGui(tk.Frame):
+    def __init__(self, app):
+        super().__init__()
+
+        self.app = app
+        self.view = ChessBoardView(self)
+        self.view.set_to_view_of_team('W')
+        self.view.pack()
+        #self.arbiter = Arbiter(ViewOfChessPlayer(self.view, AIChessPlayer(ai.PawnsAndQueensAIPlayer())),
+        #                       AIChessPlayer(ai.RandomMoveAIPlayer()))
+        self.arbiter = Arbiter(ViewOfChessPlayer(self.view, LocalHumanChessPlayer(self.view)),
+                               ViewOfChessPlayer(self.view, LocalHumanChessPlayer(self.view)))
+        self.arbiter.start_game()
+
+
+class ChessApp(tk.Tk):
+    def __init__(self):
+        super(ChessApp, self).__init__()
+
+        self.gui = ChessBoardGui(self)
+        self.gui.pack()
 
 
 if __name__ == '__main__':
-    app = ChessBoardGui()
-
-    app.mainloop()
+    ChessApp().mainloop()
