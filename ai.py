@@ -9,6 +9,9 @@ class AIPlayer:
     def pick_act(self, game_state):
         pass
 
+    def abort_computation(self):
+        pass
+
 
 class RandomMoveAIPlayer(AIPlayer):
     def __init__(self):
@@ -90,7 +93,12 @@ class PawnsAndQueensAIPlayer(AIPlayer):
 
     def __init__(self):
         self.random = Random()
-        self.pool = Pool(8)
+        self.pool = None
+
+    def abort_computation(self):
+        pool = self.pool
+        if pool:
+            pool.terminate()
 
     def pick_act(self, game_state):
         ai_team = game_state.playing_team
@@ -106,7 +114,11 @@ class PawnsAndQueensAIPlayer(AIPlayer):
                       for move in piece.get_possible_moves(game_state, pawn_pos)]
 
         # score them all (illegal moves get score 'None')
-        move_with_score = zip(moves, self.pool.map(scorer.score_move, moves))
+
+        with Pool(8) as pool:
+            self.pool = pool
+            move_with_score = zip(moves, self.pool.map(scorer.score_move, moves))
+            self.pool = None
 
         # filter out illegal moves
         move_with_score = list(filter(lambda move_and_score: move_and_score[1] is not None, move_with_score))

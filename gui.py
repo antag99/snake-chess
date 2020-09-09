@@ -9,6 +9,7 @@ import ai
 
 import functools
 import tkinter as tk
+import tkinter.font
 
 
 class ChessPlayer:
@@ -23,6 +24,9 @@ class ChessPlayer:
         pass
 
     def report_result(self, arbiter, result):
+        pass
+
+    def interrupt(self):
         pass
 
 
@@ -51,6 +55,9 @@ class AIChessPlayer(ChessPlayer):
 
     def report_result(self, arbiter, result):
         pass
+
+    def interrupt(self):
+        self.ai_player.abort_computation()
 
 
 class ViewOfChessPlayer(ChessPlayer):
@@ -96,35 +103,50 @@ class LocalHumanChessPlayer(ChessPlayer):
     def report_result(self, arbiter, result):
         pass
 
+    def interrupt(self):
+        self.view.reset_move_selection()
+
 
 class Arbiter:
-    def __init__(self, player_white, player_black):
+    def __init__(self, players):
         self.game_state = None
-        self.players = dict(W=player_white, B=player_black)
+        self.players = dict(players)
+        self._game_stopped = threading.Event()
+        self._lock = threading.Lock()
 
     def start_game(self):
         self.game_state = chess.GameState(chess.BoardState.with_initial_material())
         self.players[self.game_state.playing_team].enter_turn(self)
 
+    def abort_game(self):
+        self._game_stopped.set()
+        with self._lock:
+            self.players[self.game_state.playing_team].interrupt()
+
     def select_act(self, act):
-        if isinstance(act, chess.MoveAct):
-            is_legal_act = act.move in self.game_state.compute_legal_moves_for_playing_team()
-        elif isinstance(act, chess.ClaimDrawAct):
-            is_legal_act = self.game_state.compute_result().may_claim_draw
-        else:
-            is_legal_act = True
+        if self._game_stopped.is_set():
+            return
 
-        if is_legal_act:  # check that acts players try to perform are legal.
-            player = self.players[self.game_state.playing_team]
-            self.game_state = self.game_state.copy_with_act_applied(act)
-            player.acknowledge_act(self)  # notify the player we accept his move
+        with self._lock:
+            if isinstance(act, chess.MoveAct):
+                is_legal_act = act.move in self.game_state.compute_legal_moves_for_playing_team()
+            elif isinstance(act, chess.ClaimDrawAct):
+                is_legal_act = self.game_state.compute_result().may_claim_draw
+            else:
+                is_legal_act = True
 
-        result = self.game_state.compute_result()
-        if result.is_finished:
-            for player in self.players.values():
-                player.report_result(self, result)
-        else:  # time for current player to make a move - this also happens
-            self.players[self.game_state.playing_team].enter_turn(self)
+            if is_legal_act:  # check that acts players try to perform are legal.
+                player = self.players[self.game_state.playing_team]
+                self.game_state = self.game_state.copy_with_act_applied(act)
+                player.acknowledge_act(self)  # notify the player we accept his move
+
+            result = self.game_state.compute_result()
+            if result.is_finished:
+                for player in self.players.values():
+                    player.report_result(self, result)
+            else:
+                # time for current player to make a move - this also happens if a move was invalid
+                self.players[self.game_state.playing_team].enter_turn(self)
 
 
 class ChessBoardView(tk.Frame):
@@ -157,9 +179,11 @@ class ChessBoardView(tk.Frame):
         self._chess_piece_button_by_pos = dict()
 
         for x in range(0, 8):
+            self.grid_columnconfigure(x, pad=0)
+            self.grid_rowconfigure(x, pad=0)
             for y in range(0, 8):
-                button = tk.Button(self, image=self.empty_image)
-                button.grid(column=x, row=y)
+                button = tk.Button(self, image=self.empty_image, borderwidth=0)
+                button.grid(column=x, row=y, padx=0, pady=0)
                 self._chess_piece_button_by_ui_grid_pos[(x, y)] = button
 
         self.allow_move_selection = False
@@ -202,6 +226,7 @@ class ChessBoardView(tk.Frame):
     def _set_square_color(self, pos, bg_color):
         button = self._chess_piece_button_by_pos[pos]
         button['background'] = bg_color
+        button['activebackground'] = bg_color
 
     def _reset_square_colors(self):
         for x in range(0, 8):
@@ -250,18 +275,91 @@ class ChessBoardView(tk.Frame):
 
 
 class ChessBoardGui(tk.Frame):
+    class GameStartButtonsFrame(tk.Frame):
+        def __init__(self, gui):
+            super().__init__(gui)
+
+            players = [
+                ("Human", LocalHumanChessPlayer(gui.view)),
+                ("Random moves", AIChessPlayer(ai.RandomMoveAIPlayer())),
+                ("Stupid AI", AIChessPlayer(ai.PawnsAndQueensAIPlayer())),
+            ]
+
+            player_selection = dict(W=players[0][1], B=players[0][1])
+
+            for team in 'WB':
+                var = tk.IntVar(self, 0, team + "_player")
+
+                def player_selection_change(team, var):
+                    player_selection[team] = players[var.get()][1]
+
+                tk.Label(self,
+                         text=dict(W='White', B='Black')[team],
+                         font=tkinter.font.Font(family='Arial', size=12, weight=tkinter.font.BOLD)).pack(anchor='w', padx=6)
+
+                buttons = [tk.Radiobutton(self,
+                                          text=players[i][0],
+                                          variable=var,
+                                          value=i) for i in range(0, 3)]
+                for button in buttons:
+                    button['command'] = functools.partial(player_selection_change, team, var)
+                    button.pack()
+
+            def start_game():
+                chess_players = dict(player_selection)
+                any_human_player = False
+
+                # Human players get the view changed to their perspective when they enter a turn.
+                for team in 'WB':
+                    if isinstance(chess_players[team], LocalHumanChessPlayer):
+                        any_human_player = True
+                        chess_players[team] = ViewOfChessPlayer(gui.view, chess_players[team])
+
+                # If there is no human player, show the view from the white player's perspective
+                if not any_human_player:
+                    chess_players['W'] = ViewOfChessPlayer(gui.view, chess_players['W'])
+
+                gui.start_game(chess_players)
+
+            start_game_button = tk.Button(self,
+                                          text='Start game!',
+                                          command=start_game)
+            start_game_button.pack()
+
     def __init__(self, app):
         super().__init__()
 
         self.app = app
         self.view = ChessBoardView(self)
         self.view.set_to_view_of_team('W')
-        self.view.pack()
-        #self.arbiter = Arbiter(ViewOfChessPlayer(self.view, AIChessPlayer(ai.PawnsAndQueensAIPlayer())),
-        #                       AIChessPlayer(ai.RandomMoveAIPlayer()))
-        self.arbiter = Arbiter(ViewOfChessPlayer(self.view, LocalHumanChessPlayer(self.view)),
-                               ViewOfChessPlayer(self.view, LocalHumanChessPlayer(self.view)))
+        self.view.pack(anchor='ne', side='left', padx=20, pady=20)
+        self.arbiter = None
+        self._game_starts_buttons_frame = None
+        self._abort_game_button = None
+        self._open_game_configuration()
+
+    def _open_game_configuration(self):
+        self._game_starts_buttons_frame = self.GameStartButtonsFrame(self)
+        self._game_starts_buttons_frame.pack(side='right', anchor='w')
+
+    def abort_game(self):
+        self.arbiter.abort_game()
+        self.arbiter = None
+        self._abort_game_button.destroy()
+        self._abort_game_button = None
+        self._open_game_configuration()
+
+    def start_game(self, chess_players):
+        self.arbiter = Arbiter(chess_players)
         self.arbiter.start_game()
+        self._game_starts_buttons_frame.destroy()
+        self._game_starts_buttons_frame = None
+        self._abort_game_button = tk.Button(self,
+                                            text='Abort game',
+                                            command=self.abort_game)
+        self._abort_game_button.pack(side='bottom', anchor='w', padx=25, pady=10)
+
+
 
 
 class ChessApp(tk.Tk):
