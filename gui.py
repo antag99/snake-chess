@@ -110,7 +110,7 @@ class Arbiter:
         if isinstance(act, chess.MoveAct):
             is_legal_act = act.move in self.game_state.compute_legal_moves_for_playing_team()
         elif isinstance(act, chess.ClaimDrawAct):
-            is_legal_act = self.game_state.comput_result().may_claim_draw
+            is_legal_act = self.game_state.compute_result().may_claim_draw
         else:
             is_legal_act = True
 
