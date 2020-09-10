@@ -340,7 +340,6 @@ class ChessBoardGui(tk.Frame):
             self.claim_draw_button = tk.Button(self, text="Claim draw", command=self.gui.claim_draw_handler)
 
             result = game_state.compute_result()
-            print("may claim draw=", result.may_claim_draw)
             if result.may_claim_draw:
                 self.claim_draw_button['text'] = "Claim draw by " + result.may_claim_draw_by_rule.describe(game_state)
                 self.claim_draw_button.pack(side='right')
