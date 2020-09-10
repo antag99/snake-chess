@@ -1,4 +1,4 @@
-
+from enum import Enum
 from math import copysign
 
 
@@ -361,11 +361,19 @@ class SurrenderAct(Act):
     pass
 
 
-class Outcome:
+class Outcome(Enum):
     DRAW = 0
     MAY_CLAIM_DRAW = 1
     WHITE_WINS = 2
     BLACK_WINS = 3
+
+    def describe(self):
+        return [
+            "Draw",
+            "Draw claimed",
+            "White wins",
+            "Black wins"
+        ][self.value]
 
 
 class GameEndRule:
@@ -373,6 +381,9 @@ class GameEndRule:
 
     def is_applicable(self, game_state):
         return False
+
+    def describe(self, game_state):
+        return ""
 
 
 class VictoryByCheckmate(GameEndRule):
@@ -386,6 +397,9 @@ class VictoryByCheckmate(GameEndRule):
         return is_opponent_king_checked and not has_valid_moves and \
                game_state.playing_team == get_opponent_of(self.winning_team)
 
+    def describe(self, game_state):
+        return "checkmate"
+
 
 class DrawByStalemate(GameEndRule):
     outcome = Outcome.DRAW
@@ -394,6 +408,9 @@ class DrawByStalemate(GameEndRule):
         is_king_checked = game_state.is_king_checked(game_state.playing_team)
         has_valid_moves = len(game_state.compute_legal_moves_for_playing_team()) > 0
         return not is_king_checked and not has_valid_moves
+
+    def describe(self, game_state):
+        return "stalemate"
 
 
 class RepetitionRule(GameEndRule):
@@ -420,10 +437,16 @@ class DrawClaimableByThreefoldRepetition(RepetitionRule):
     outcome = Outcome.MAY_CLAIM_DRAW
     num_repetitions = 3
 
+    def describe(self, game_state):
+        return "threefold repetition"
+
 
 class DrawByFivefoldRepetition(RepetitionRule):
     outcome = Outcome.DRAW
     num_repetitions = 5
+
+    def describe(self, game_state):
+        return "fivefold repetition"
 
 
 class NoPawnMoveOrCaptureRule(GameEndRule):
@@ -449,10 +472,16 @@ class DrawClaimableByFiftyMoveRule(GameEndRule):
     outcome = Outcome.MAY_CLAIM_DRAW
     num_turns = 50
 
+    def describe(self, game_state):
+        return "fifty move rule"
+
 
 class DrawBySeventyFiveMoveRule(GameEndRule):
     outcome = Outcome.DRAW
     num_turns = 75
+
+    def describe(self, game_state):
+        return "seventy-five move rule"
 
 
 class DrawByInsufficientMaterial(GameEndRule):
@@ -480,21 +509,30 @@ class DrawByInsufficientMaterial(GameEndRule):
             # king and bishop versus king and bishop, on same color
         ])
 
+    def describe(self, game_state):
+        return "insufficient material for checkmate"
+
 
 class DrawClaimableByOffer(GameEndRule):
     outcome = Outcome.MAY_CLAIM_DRAW
 
     def is_applicable(self, game_state):
-        return game_state.last_act is MoveAct and game_state.last_act.offer_draw
+        return isinstance(game_state.last_act, MoveAct) and game_state.last_act.offer_draw
+
+    def describe(self, game_state):
+        return "offer"
 
 
 class VictoryByOpponentSurrender(GameEndRule):
     def __init__(self, team):
         self.team = team
-        self.outcome = dict(W=Outcome.WHITE_WINS, B=Outcome.BLACK_WINS)
+        self.outcome = dict(W=Outcome.WHITE_WINS, B=Outcome.BLACK_WINS)[team]
 
     def is_applicable(self, game_state):
-        return game_state.last_act is SurrenderAct and game_state.get_playing_team() == self.team
+        return isinstance(game_state.last_act, SurrenderAct) and game_state.playing_team == self.team
+
+    def describe(self, game_state):
+        return "opponent surrender"
 
 
 class GameResult:
@@ -502,8 +540,8 @@ class GameResult:
                  game_state):
         self.ended_by_rule = None
         self.may_claim_draw_by_rule = None
-        if game_state.last_act is ClaimDrawAct:
-            self.ended_by_rule = game_state.previous_state.may_claim_draw_by_rule
+        if isinstance(game_state.last_act, ClaimDrawAct):
+            self.ended_by_rule = game_state.previous_state.compute_result().may_claim_draw_by_rule
         else:
             try:
                 self.ended_by_rule = next(rule for rule in game_state.game_end_rules
@@ -521,11 +559,13 @@ class GameResult:
         self.is_finished = self.ended_by_rule is not None
         self.may_claim_draw = not self.is_finished and self.may_claim_draw_by_rule is not None
 
-        if self.may_claim_draw and game_state.last_act is MoveAct and game_state.last_act.offer_draw:
-            self.is_finished = True
-            self.ended_by_rule = self.may_claim_draw_by_rule
-            self.may_claim_draw = False
-            self.may_claim_draw_by_rule = None
+        # Idea here is to be able to claim draw by moving into a state where threefold repetition occurs, without
+        # the opponent first making a move. This is however broken as draw becomes claimable by opponent by offer.
+        #if self.may_claim_draw and isinstance(game_state.last_act, MoveAct) and game_state.last_act.offer_draw:
+        #    self.is_finished = True
+        #    self.ended_by_rule = self.may_claim_draw_by_rule
+        #    self.may_claim_draw = False
+        #    self.may_claim_draw_by_rule = None
 
     @property
     def outcome(self):

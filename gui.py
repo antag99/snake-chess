@@ -65,46 +65,66 @@ class ViewOfChessPlayer(ChessPlayer):
     Wraps a ChessPlayer and updates a ChessBoardView to the player's view of the game
     """
 
-    def __init__(self, view, player):
-        self.view = view
+    def __init__(self, gui, player):
+        self.gui = gui
         self.player = player
 
     def enter_turn(self, arbiter):
-        self.view.game_state = arbiter.game_state
-        self.view.set_to_view_of_team(arbiter.game_state.playing_team)
+        self.gui.view.game_state = arbiter.game_state
+        self.gui.view.set_to_view_of_team(arbiter.game_state.playing_team)
+        self.gui.game_status_frame.update_to_game_state(arbiter.game_state)
         self.player.enter_turn(arbiter)
 
     def acknowledge_act(self, arbiter):
-        self.view.game_state = arbiter.game_state
+        self.gui.view.game_state = arbiter.game_state
+        self.gui.game_status_frame.update_to_game_state(arbiter.game_state)
         self.player.acknowledge_act(arbiter)
 
     def report_result(self, arbiter, result):
-        self.view.game_state = arbiter.game_state
+        self.gui.view.game_state = arbiter.game_state
+        self.gui.game_status_frame.update_to_game_state(arbiter.game_state)
         self.player.report_result(arbiter, result)
 
 
 class LocalHumanChessPlayer(ChessPlayer):
 
-    def __init__(self, view):
-        self.view = view
+    def __init__(self, gui):
+        self.gui = gui
+        self.offer_draw = False
 
-    @staticmethod
-    def _move_selection_handler(arbiter, move):
-        arbiter.select_act(chess.MoveAct(move, False))
+    def _move_selection_handler(self, arbiter, move):
+        arbiter.select_act(chess.MoveAct(move, self.offer_draw))
+
+    def _set_offer_draw_handler(self, offer_draw):
+        self.offer_draw = offer_draw
+
+    def _claim_draw_handler(self, arbiter):
+        arbiter.select_act(chess.ClaimDrawAct())
+
+    def _surrender_handler(self, arbiter):
+        arbiter.select_act(chess.SurrenderAct())
 
     def enter_turn(self, arbiter):
-        self.view.allow_move_selection = True
-        self.view.move_selection_handler = functools.partial(self._move_selection_handler, arbiter)
+        self.gui.view.allow_move_selection = True
+        self.gui.view.move_selection_handler = functools.partial(self._move_selection_handler, arbiter)
+
+        self.offer_draw = False
+        self.gui.set_offer_draw_handler = self._set_offer_draw_handler
+        self.gui.claim_draw_handler = functools.partial(self._claim_draw_handler, arbiter)
+        self.gui.surrender_handler = functools.partial(self._surrender_handler, arbiter)
+        self.gui.game_status_frame.set_act_buttons_active(True)
 
     def acknowledge_act(self, arbiter):
-        self.view.allow_move_selection = False
-        self.view.reset_move_selection()
+        self.gui.view.allow_move_selection = False
+        self.gui.view.reset_move_selection()
+        self.gui.clear_handlers()
+        self.gui.game_status_frame.set_act_buttons_active(False)
 
     def report_result(self, arbiter, result):
         pass
 
     def interrupt(self):
-        self.view.reset_move_selection()
+        self.gui.view.reset_move_selection()
 
 
 class Arbiter:
@@ -151,38 +171,16 @@ class Arbiter:
 
 class ChessBoardView(tk.Frame):
 
-    def __init__(self, parent):
+    def __init__(self, parent, gui):
         super(ChessBoardView, self).__init__(parent)
-        # Note that Tkinter PhotoImage's are garbage collected even if they are needed for active widgets, it is
-        # mandatory to keep a reference to them for the lifetime of the widget.
-        self.empty_image = tk.PhotoImage(file="icons/empty.png")
-        self.piece_images_by_team_and_symbol = dict(
-            W=dict(
-                P=tk.PhotoImage(file="icons/pawn_white.png"),
-                R=tk.PhotoImage(file="icons/rook_white.png"),
-                N=tk.PhotoImage(file="icons/knight_white.png"),
-                B=tk.PhotoImage(file="icons/bishop_white.png"),
-                Q=tk.PhotoImage(file="icons/queen_white.png"),
-                K=tk.PhotoImage(file="icons/king_white.png")
-            ),
-            B=dict(
-                P=tk.PhotoImage(file="icons/pawn_black.png"),
-                R=tk.PhotoImage(file="icons/rook_black.png"),
-                N=tk.PhotoImage(file="icons/knight_black.png"),
-                B=tk.PhotoImage(file="icons/bishop_black.png"),
-                Q=tk.PhotoImage(file="icons/queen_black.png"),
-                K=tk.PhotoImage(file="icons/king_black.png")
-            )
-        )
+        self.gui = gui
 
         self._chess_piece_button_by_ui_grid_pos = dict()
         self._chess_piece_button_by_pos = dict()
 
         for x in range(0, 8):
-            self.grid_columnconfigure(x, pad=0)
-            self.grid_rowconfigure(x, pad=0)
             for y in range(0, 8):
-                button = tk.Button(self, image=self.empty_image, borderwidth=0)
+                button = tk.Button(self, image=self.gui.empty_image, borderwidth=0)
                 button.grid(column=x, row=y, padx=0, pady=0)
                 self._chess_piece_button_by_ui_grid_pos[(x, y)] = button
 
@@ -252,8 +250,8 @@ class ChessBoardView(tk.Frame):
                 button = self._chess_piece_button_by_pos[pos]
                 button['command'] = functools.partial(self._on_board_square_click, x, y)
                 piece = self.game_state and self.game_state.piece_at(pos)
-                piece_image = self.piece_images_by_team_and_symbol[piece.team][piece.symbol] \
-                    if piece is not None else self.empty_image
+                piece_image = self.gui.piece_images_by_team_and_symbol[piece.team][piece.symbol] \
+                    if piece is not None else self.gui.empty_image
                 button['image'] = piece_image
 
         self.pack()
@@ -276,11 +274,11 @@ class ChessBoardView(tk.Frame):
 
 class ChessBoardGui(tk.Frame):
     class GameStartButtonsFrame(tk.Frame):
-        def __init__(self, gui):
-            super().__init__(gui)
+        def __init__(self, parent, gui):
+            super().__init__(parent, gui)
 
             players = [
-                ("Human", LocalHumanChessPlayer(gui.view)),
+                ("Human", LocalHumanChessPlayer(gui)),
                 ("Random moves", AIChessPlayer(ai.RandomMoveAIPlayer())),
                 ("Stupid AI", AIChessPlayer(ai.PawnsAndQueensAIPlayer())),
             ]
@@ -303,7 +301,7 @@ class ChessBoardGui(tk.Frame):
                                           value=i) for i in range(0, 3)]
                 for button in buttons:
                     button['command'] = functools.partial(player_selection_change, team, var)
-                    button.pack()
+                    button.pack(anchor='w')
 
             def start_game():
                 chess_players = dict(player_selection)
@@ -313,11 +311,11 @@ class ChessBoardGui(tk.Frame):
                 for team in 'WB':
                     if isinstance(chess_players[team], LocalHumanChessPlayer):
                         any_human_player = True
-                        chess_players[team] = ViewOfChessPlayer(gui.view, chess_players[team])
+                        chess_players[team] = ViewOfChessPlayer(gui, chess_players[team])
 
                 # If there is no human player, show the view from the white player's perspective
                 if not any_human_player:
-                    chess_players['W'] = ViewOfChessPlayer(gui.view, chess_players['W'])
+                    chess_players['W'] = ViewOfChessPlayer(gui, chess_players['W'])
 
                 gui.start_game(chess_players)
 
@@ -326,40 +324,161 @@ class ChessBoardGui(tk.Frame):
                                           command=start_game)
             start_game_button.pack()
 
+    class GameActButtonsFrame(tk.Frame):
+        def __init__(self, parent, gui, game_state):
+            super().__init__(parent)
+
+            self.gui = gui
+
+            self.offer_draw_var = tk.IntVar()
+            self.offer_draw = tk.Checkbutton(self, text="Offer Draw", variable=self.offer_draw_var,
+                                             command=lambda: self.gui.set_offer_draw_handler(
+                                                 self.offer_draw_var.get() and True or False))
+
+            self.surrender_button = tk.Button(self, text="Surrender", command=self.gui.surrender_handler)
+            self.surrender_button.pack(side='right')
+            self.claim_draw_button = tk.Button(self, text="Claim draw", command=self.gui.claim_draw_handler)
+
+            result = game_state.compute_result()
+            print("may claim draw=", result.may_claim_draw)
+            if result.may_claim_draw:
+                self.claim_draw_button['text'] = "Claim draw by " + result.may_claim_draw_by_rule.describe(game_state)
+                self.claim_draw_button.pack(side='right')
+            else:
+                self.offer_draw.pack(side='right')
+
+    class GameStatusFrame(tk.Frame):
+        def __init__(self, parent, gui):
+            super().__init__(parent)
+
+            self.gui = gui
+            self._abort_game_button = tk.Button(self,
+                                                text='Abort game',
+                                                command=self.gui.abort_game)
+            self._abort_game_button.pack(side='left', anchor='w', padx=25, pady=10)
+
+            self.status_label = tk.Label(self, text='', font=tkinter.font.Font(family='Arial', size=12,
+                                                                               weight=tkinter.font.BOLD))
+            self.status_label.pack(side='right', anchor='w', padx=5)
+
+            self.act_buttons = None
+            self.game_state = None
+
+            # self.material_display = [None, None]
+            # for i in range(0, 2):
+            #     material_frame = tk.Frame(self)
+            #     material_frame.pack()
+            #     self.material_display[i] = material_frame
+
+            # self._scaled_image_cache = dict()
+            # for t in 'WB':
+            #     scaled = dict()
+            #     for symbol in self.gui.piece_images_by_team_and_symbol[t]:
+            #         original_image = self.gui.piece_images_by_team_and_symbol[t][symbol]
+            #         scaled[symbol] = original_image.subsample(4)
+            #     self._scaled_image_cache[t] = scaled
+
+        def set_act_buttons_active(self, act_buttons_active):
+            if (self.act_buttons is None) != act_buttons_active:
+                return
+
+            if not act_buttons_active:
+                self.act_buttons.destroy()
+                self.act_buttons = None
+            else:
+                self.act_buttons = self.gui.GameActButtonsFrame(self, self.gui, self.game_state)
+                self.act_buttons.pack(side='right')
+
+        def update_to_game_state(self, game_state):
+            self.game_state = game_state
+
+            result = game_state.compute_result()
+
+            if result.is_finished:
+                status_text = result.outcome.describe() + " by " + result.ended_by_rule.describe(game_state)
+                self._abort_game_button['text'] = "Close game"
+            else:
+                status_text = dict(W="White", B="Black")[game_state.playing_team] + " moves"
+            self.status_label['text'] = status_text
+
+            # for i, team in [(0, 'W'), (1, 'B')]:
+            #     material = [piece.symbol for pos, piece in game_state.board_state.positions_and_pieces if piece.team == team]
+            #     material.sort(key='PRNBQK'.index)
+            #
+            #     self.material_display[i].destroy()
+            #     self.material_display[i] = tk.Frame(self)
+            #     for symbol in material:
+            #         if symbol != 'K':
+            #             image = self._scaled_image_cache[team][symbol]
+            #             img = tk.Label(self.material_display[i], image=image)
+            #             img.pack(side='right', anchor='w')
+            #     self.material_display[i].pack()
+
     def __init__(self, app):
         super().__init__()
+        # Note that Tkinter PhotoImage's are garbage collected even if they are needed for active widgets, it is
+        # mandatory to keep a reference to them for the lifetime of the widget.
+
+        self.empty_image = tk.PhotoImage(file="icons/empty.png")
+        self.piece_images_by_team_and_symbol = dict(
+            W=dict(
+                P=tk.PhotoImage(file="icons/pawn_white.png"),
+                R=tk.PhotoImage(file="icons/rook_white.png"),
+                N=tk.PhotoImage(file="icons/knight_white.png"),
+                B=tk.PhotoImage(file="icons/bishop_white.png"),
+                Q=tk.PhotoImage(file="icons/queen_white.png"),
+                K=tk.PhotoImage(file="icons/king_white.png")
+            ),
+            B=dict(
+                P=tk.PhotoImage(file="icons/pawn_black.png"),
+                R=tk.PhotoImage(file="icons/rook_black.png"),
+                N=tk.PhotoImage(file="icons/knight_black.png"),
+                B=tk.PhotoImage(file="icons/bishop_black.png"),
+                Q=tk.PhotoImage(file="icons/queen_black.png"),
+                K=tk.PhotoImage(file="icons/king_black.png")
+            )
+        )
 
         self.app = app
-        self.view = ChessBoardView(self)
+        self.view_and_status_frame = tk.Frame(self)
+        self.view_and_status_frame.pack(side='left')
+        self.view = ChessBoardView(self.view_and_status_frame, self)
         self.view.set_to_view_of_team('W')
-        self.view.pack(anchor='ne', side='left', padx=20, pady=20)
+        self.view.pack(expand=True, side='top', anchor='ne', padx=20, pady=20)
         self.arbiter = None
+        self.game_status_frame = None
         self._game_starts_buttons_frame = None
         self._abort_game_button = None
         self._open_game_configuration()
 
+        self.set_offer_draw_handler = None
+        self.surrender_handler = None
+        self.claim_draw_handler = None
+        self.clear_handlers()
+
+    def clear_handlers(self):
+        self.set_offer_draw_handler = lambda _: None
+        self.surrender_handler = lambda _: None
+        self.claim_draw_handler = lambda _: None
+
     def _open_game_configuration(self):
-        self._game_starts_buttons_frame = self.GameStartButtonsFrame(self)
+        self._game_starts_buttons_frame = self.GameStartButtonsFrame(self, self)
         self._game_starts_buttons_frame.pack(side='right', anchor='w')
 
     def abort_game(self):
         self.arbiter.abort_game()
         self.arbiter = None
-        self._abort_game_button.destroy()
-        self._abort_game_button = None
+        self.game_status_frame.destroy()
+        self.game_status_frame = None
         self._open_game_configuration()
 
     def start_game(self, chess_players):
-        self.arbiter = Arbiter(chess_players)
-        self.arbiter.start_game()
         self._game_starts_buttons_frame.destroy()
         self._game_starts_buttons_frame = None
-        self._abort_game_button = tk.Button(self,
-                                            text='Abort game',
-                                            command=self.abort_game)
-        self._abort_game_button.pack(side='bottom', anchor='w', padx=25, pady=10)
-
-
+        self.game_status_frame = self.GameStatusFrame(self.view_and_status_frame, self)
+        self.game_status_frame.pack(side='bottom', anchor='w')
+        self.arbiter = Arbiter(chess_players)
+        self.arbiter.start_game()
 
 
 class ChessApp(tk.Tk):
