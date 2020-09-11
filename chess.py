@@ -94,8 +94,8 @@ class Piece:
     def __eq__(self, other):
         return isinstance(other, Piece) and (self.team + self.symbol) == (other.team + other.symbol)
 
-    def team_indicating_letter(self, player_team='W'):
-        return self.symbol.upper() if self.team == player_team else self.symbol.lower()
+    def team_indicating_letter(self):
+        return self.symbol.upper() if self.team == 'W' else self.symbol.lower()
 
     def get_attacked_positions(self, game_state, piece_position):
         """
@@ -694,9 +694,17 @@ class BoardState:
         assert pos in self.piece_by_pos, f"Coordinates are out of range: {pos}"
         return self.piece_by_pos[pos]
 
-    def __str__(self) -> str:
+    def to_string(self, view_of_team):
         out = []
+
         for y in range(0, 8):
-            out.append(" ".join([self.piece_at((x, 7 - y)) and self.piece_at((x, 7 - y)).team_indicating_letter()
-                                or "." for x in range(0, 8)]))
-        return "\n".join(out)
+            board_y = 7 - y if view_of_team == 'W' else y
+            for x in range(0, 8):
+                board_x = 7 - x if view_of_team == 'B' else x
+                piece = self.piece_at((board_x, board_y))
+                out.append((" " if x > 0 else "") + (piece and piece.team_indicating_letter() or "."))
+            out.append("\n")
+        return "".join(out)
+
+    def __str__(self) -> str:
+        return self.to_string('W')
