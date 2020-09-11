@@ -5,16 +5,42 @@ import functools
 
 
 class ChessPlayer:
-    def enter_turn(self, arbiter):
+    """
+    Represents a player in the game, human or AI. Interfaces to the mechanism by which a player chooses its moves.
+    """
+
+    def on_turn_to_act(self, arbiter):
+        """
+        Called when this player should act. When the player has decided what move to make, it should invoke
+        arbiter.pick_act.
+
+        :param arbiter: the arbiter of the game
+        """
         pass
 
-    def acknowledge_act(self, arbiter):
+    def cancel_turn_to_act(self, arbiter):
+        """
+        Called to withdraw the opportunity of the player to act. Invoked if the game is aborted, could also come to use
+        if turn timing is implemented.
+
+        :param arbiter: the arbiter of the game
+        """
         pass
 
-    def report_result(self, arbiter, result):
-        pass
 
-    def interrupt(self):
+class GameWatcher:
+    """
+    Watcher that is notified of game state updates. Used to update the display of the game and determine when a game
+    has finished.
+    """
+
+    def on_game_state_changed(self, arbiter):
+        """
+        Called to notify the game watcher of the current game state. Called at the beginning of the game and after
+        every move, and thereby also when the game is finished.
+
+        :param arbiter: the arbiter of the game
+        """
         pass
 
 
@@ -22,17 +48,23 @@ class Arbiter:
     def __init__(self, players):
         self.game_state = None
         self.players = dict(players)
+        self.watchers = []
         self._game_stopped = threading.Event()
         self._lock = threading.Lock()
 
+    def _notify_watchers(self):
+        for watcher in self.watchers:
+            watcher.on_game_state_changed(self)
+
     def start_game(self):
         self.game_state = chess.GameState(chess.BoardState.with_initial_material())
-        self.players[self.game_state.playing_team].enter_turn(self)
+        self._notify_watchers()
+        self.players[self.game_state.playing_team].on_turn_to_act(self)
 
     def abort_game(self):
         self._game_stopped.set()
         with self._lock:
-            self.players[self.game_state.playing_team].interrupt()
+            self.players[self.game_state.playing_team].cancel_turn_to_act(self)
 
     def select_act(self, act):
         if self._game_stopped.is_set():
@@ -47,17 +79,11 @@ class Arbiter:
                 is_legal_act = True
 
             if is_legal_act:  # check that acts players try to perform are legal.
-                player = self.players[self.game_state.playing_team]
                 self.game_state = self.game_state.copy_with_act_applied(act)
-                player.acknowledge_act(self)  # notify the player we accept his move
+                self._notify_watchers()
 
-            result = self.game_state.compute_result()
-            if result.is_finished:
-                for player in self.players.values():
-                    player.report_result(self, result)
-            else:
-                # time for current player to make a move - this also happens if a move was invalid
-                self.players[self.game_state.playing_team].enter_turn(self)
+            if not is_legal_act or not self.game_state.compute_result().is_finished:
+                self.players[self.game_state.playing_team].on_turn_to_act(self)
 
 
 class AIChessPlayer(ChessPlayer):
@@ -65,23 +91,19 @@ class AIChessPlayer(ChessPlayer):
         self.ai_player = ai_player
         self.ai_waiting_thread = None
 
-    def _enter_turn_in_separate_thread(self, arbiter):
+    def _pick_act_in_separate_thread(self, arbiter):
+        # We pick the act in a separate thread, it will spend a lot of time waiting for separate processes to finish
+        # the computation. This way the GUI can remain responsive while the AI is thinking.
         act = self.ai_player.pick_act(arbiter.game_state)
         arbiter.select_act(act)
 
-    def enter_turn(self, arbiter):
-        target = functools.partial(self._enter_turn_in_separate_thread, arbiter)
+    def on_turn_to_act(self, arbiter):
+        target = functools.partial(self._pick_act_in_separate_thread, arbiter)
         self.ai_waiting_thread = threading.Thread(group=None,
                                                   target=target,
                                                   name=None,
                                                   daemon=True)
         self.ai_waiting_thread.start()
 
-    def acknowledge_act(self, arbiter):
-        pass
-
-    def report_result(self, arbiter, result):
-        pass
-
-    def interrupt(self):
+    def cancel_turn_to_act(self, arbiter):
         self.ai_player.abort_computation()

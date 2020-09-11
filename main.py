@@ -12,45 +12,29 @@ class CLIHumanPlayer(arbiter.ChessPlayer):
     def __init__(self, cli):
         self.cli = cli
 
-    def enter_turn(self, arbiter):
+    def on_turn_to_act(self, arbiter):
         self.cli.time_to_play.set()
 
-    def acknowledge_act(self, arbiter):
-        pass
-
-    def report_result(self, arbiter, result):
-        pass
-
-    def interrupt(self):
+    def cancel_turn_to_act(self, arbiter):
         pass
 
 
-class CLIViewOfPlayer(arbiter.ChessPlayer):
+class CLIGameStateWatcher(arbiter.GameWatcher):
 
-    def __init__(self, player):
-        self.player = player
+    def __init__(self):
+        self.game_finished = threading.Event()
 
-    def show_game_state(self, game_state):
+    def on_game_state_changed(self, arbiter):
+        game_state = arbiter.game_state
         sys.stdout.write('-' * 15 + "\n" + game_state.board_state.to_string(game_state.playing_team))
         result = game_state.compute_result()
         if result.is_finished:
-            print(result.outcome.describe() + " by " + result.ended_by_rule.describe(game_state))
-        elif result.may_claim_draw:
-            print("May claim draw by " + result.may_claim_draw_by_rule.describe(game_state))
-
-    def enter_turn(self, arbiter):
-        self.show_game_state(arbiter.game_state)
-        self.player.enter_turn(arbiter)
-
-    def acknowledge_act(self, arbiter):
-        self.player.acknowledge_act(arbiter)
-
-    def report_result(self, arbiter, result):
-        self.show_game_state(arbiter.game_state)
-        self.player.report_result(arbiter, result)
-
-    def interrupt(self):
-        self.player.interrupt()
+            sys.stdout.write(result.outcome.describe() + " by " + result.ended_by_rule.describe(game_state) + "\n")
+            self.game_finished.set()
+        else:
+            sys.stdout.write(dict(W="White", B="Black")[game_state.playing_team] + " moves.\n")
+            if result.may_claim_draw:
+                sys.stdout.write("May claim draw by " + result.may_claim_draw_by_rule.describe(game_state) + "\n")
 
 
 class CommandLineInterface:
@@ -188,7 +172,6 @@ class CommandLineInterface:
                 if player_id in player_by_id:
                     player = player_by_id[player_id]()
                     if isinstance(player, CLIHumanPlayer):
-                        player = CLIViewOfPlayer(player)
                         any_human = True
                     players[team] = player
                     break
@@ -198,20 +181,20 @@ class CommandLineInterface:
         choose_player("White", "W")
         choose_player("Black", "B")
 
-        if not any_human:
-            players['W'] = CLIViewOfPlayer(players['W'])
-        else:
+        if any_human:
             sys.stdout.write("Starting game. When it's your turn to make a move, you may type moves in PGN or "
                              "surrender, offer draw, or claim draw when applicable.\n")
 
         a = arbiter.Arbiter(players)
+        watcher = CLIGameStateWatcher()
+        a.watchers.append(watcher)
         a.start_game()
 
         while True:
             if self.time_to_play.is_set():
                 self.time_to_play.clear()
                 self.on_player_enter_turn(a)
-            elif not a.game_state.compute_result().is_finished:
+            elif not watcher.game_finished.is_set():
                 time.sleep(0.25)
             else:
                 break

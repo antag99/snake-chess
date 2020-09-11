@@ -12,43 +12,30 @@ import tkinter as tk
 import tkinter.font
 
 
-import threading
-from arbiter import *
+import arbiter
 
 
-class ViewOfChessPlayer(ChessPlayer):
-    """
-    Wraps a ChessPlayer and updates a ChessBoardView to the player's view of the game
-    """
-
-    def __init__(self, gui, player):
+class GUIGameWatcher(arbiter.GameWatcher):
+    def __init__(self, gui, players_to_follow) -> None:
         self.gui = gui
-        self.player = player
+        self.players_to_follow = players_to_follow
 
-    def enter_turn(self, arbiter):
-        self.gui.view.game_state = arbiter.game_state
-        self.gui.view.set_to_view_of_team(arbiter.game_state.playing_team)
-        self.gui.game_status_frame.update_to_game_state(arbiter.game_state)
-        self.player.enter_turn(arbiter)
-
-    def acknowledge_act(self, arbiter):
+    def on_game_state_changed(self, arbiter):
         self.gui.view.game_state = arbiter.game_state
         self.gui.game_status_frame.update_to_game_state(arbiter.game_state)
-        self.player.acknowledge_act(arbiter)
-
-    def report_result(self, arbiter, result):
-        self.gui.view.game_state = arbiter.game_state
-        self.gui.game_status_frame.update_to_game_state(arbiter.game_state)
-        self.player.report_result(arbiter, result)
+        if arbiter.game_state.playing_team in self.players_to_follow:
+            self.gui.view.set_to_view_of_team(arbiter.game_state.playing_team)
+        else:
+            self.gui.view.set_to_view_of_team(self.players_to_follow[0])
 
 
-class LocalHumanChessPlayer(ChessPlayer):
-
+class GUIHumanChessPlayer(arbiter.ChessPlayer):
     def __init__(self, gui):
         self.gui = gui
         self.offer_draw = False
 
     def _move_selection_handler(self, arbiter, move):
+        self.cancel_turn_to_act(arbiter)
         arbiter.select_act(chess.MoveAct(move, self.offer_draw))
 
     def _set_offer_draw_handler(self, offer_draw):
@@ -60,7 +47,7 @@ class LocalHumanChessPlayer(ChessPlayer):
     def _surrender_handler(self, arbiter):
         arbiter.select_act(chess.SurrenderAct())
 
-    def enter_turn(self, arbiter):
+    def on_turn_to_act(self, arbiter):
         self.gui.view.allow_move_selection = True
         self.gui.view.move_selection_handler = functools.partial(self._move_selection_handler, arbiter)
 
@@ -70,17 +57,11 @@ class LocalHumanChessPlayer(ChessPlayer):
         self.gui.surrender_handler = functools.partial(self._surrender_handler, arbiter)
         self.gui.game_status_frame.set_act_buttons_active(True)
 
-    def acknowledge_act(self, arbiter):
+    def cancel_turn_to_act(self, arbiter):
         self.gui.view.allow_move_selection = False
         self.gui.view.reset_move_selection()
         self.gui.clear_handlers()
         self.gui.game_status_frame.set_act_buttons_active(False)
-
-    def report_result(self, arbiter, result):
-        pass
-
-    def interrupt(self):
-        self.gui.view.reset_move_selection()
 
 
 class ChessBoardView(tk.Frame):
@@ -193,18 +174,18 @@ class ChessBoardGui(tk.Frame):
             super().__init__(parent, gui)
 
             players = [
-                ("Human", LocalHumanChessPlayer(gui)),
-                ("Random moves", AIChessPlayer(ai.RandomMoveAIPlayer())),
-                ("Stupid AI", AIChessPlayer(ai.PawnsAndQueensAIPlayer())),
+                ("Human", lambda: GUIHumanChessPlayer(gui)),
+                ("Random moves", lambda: arbiter.AIChessPlayer(ai.RandomMoveAIPlayer())),
+                ("Stupid AI", lambda: arbiter.AIChessPlayer(ai.PawnsAndQueensAIPlayer())),
             ]
 
-            player_selection = dict(W=players[0][1], B=players[0][1])
+            player_selection = dict(W=players[0][1](), B=players[0][1]())
 
             for team in 'WB':
                 var = tk.IntVar(self, 0, team + "_player")
 
                 def player_selection_change(team, var):
-                    player_selection[team] = players[var.get()][1]
+                    player_selection[team] = players[var.get()][1]()
 
                 tk.Label(self,
                          text=dict(W='White', B='Black')[team],
@@ -218,25 +199,9 @@ class ChessBoardGui(tk.Frame):
                     button['command'] = functools.partial(player_selection_change, team, var)
                     button.pack(anchor='w')
 
-            def start_game():
-                chess_players = dict(player_selection)
-                any_human_player = False
-
-                # Human players get the view changed to their perspective when they enter a turn.
-                for team in 'WB':
-                    if isinstance(chess_players[team], LocalHumanChessPlayer):
-                        any_human_player = True
-                        chess_players[team] = ViewOfChessPlayer(gui, chess_players[team])
-
-                # If there is no human player, show the view from the white player's perspective
-                if not any_human_player:
-                    chess_players['W'] = ViewOfChessPlayer(gui, chess_players['W'])
-
-                gui.start_game(chess_players)
-
             start_game_button = tk.Button(self,
                                           text='Start game!',
-                                          command=start_game)
+                                          command=lambda: gui.start_game(dict(player_selection)))
             start_game_button.pack()
 
     class GameActButtonsFrame(tk.Frame):
@@ -391,7 +356,9 @@ class ChessBoardGui(tk.Frame):
         self._game_starts_buttons_frame = None
         self.game_status_frame = self.GameStatusFrame(self.view_and_status_frame, self)
         self.game_status_frame.pack(side='bottom', anchor='w')
-        self.arbiter = Arbiter(chess_players)
+        self.arbiter = arbiter.Arbiter(chess_players)
+        players_to_follow = filter(lambda t: isinstance(chess_players[t], GUIHumanChessPlayer), "WB")
+        self.arbiter.watchers.append(GUIGameWatcher(self, list(players_to_follow) or "W"))
         self.arbiter.start_game()
 
 
