@@ -86,7 +86,7 @@ class CommandLineInterface:
         if not col_1:
             if row_1:
                 return None
-            if not col_0 and col_1:
+            if not (col_0 and row_0):
                 return None
             if len(notation) > 0:
                 return None
