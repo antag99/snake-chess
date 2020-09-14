@@ -43,9 +43,11 @@ class GUIHumanChessPlayer(arbiter.ChessPlayer):
 
     def _claim_draw_handler(self, arbiter):
         arbiter.select_act(chess.ClaimDrawAct())
+        self.cancel_turn_to_act(arbiter)
 
     def _surrender_handler(self, arbiter):
         arbiter.select_act(chess.SurrenderAct())
+        self.cancel_turn_to_act(arbiter)
 
     def on_turn_to_act(self, arbiter):
         self.gui.view.allow_move_selection = True
@@ -96,6 +98,39 @@ class ChessBoardView(tk.Frame):
         self._game_state = game_state
         self._update_chess_piece_images()
 
+    class PawnPromotionDialog(tk.Toplevel):
+        # https://effbot.org/tkinterbook/tkinter-dialog-windows.htm
+
+        def __init__(self, parent, gui, moves_to_choose):
+            super().__init__(parent)
+
+            self.gui = gui
+            self.title("Choose pawn promotion")
+
+            self.transient(parent)
+            self.parent = parent
+            self.grab_set()
+            self.protocol("WM_DELETE_WINDOW", self.cancel)
+
+            self.moves_to_choose = moves_to_choose
+
+            for i in range(0, len(moves_to_choose)):
+                move = moves_to_choose[i]
+                button = tk.Button(self, image=gui.piece_images_by_team_and_symbol
+                [move.promoted_piece.team][move.promoted_piece.symbol], command=functools.partial(self.choose, move))
+                button.pack(side='right')
+
+            tk.Button(self, text='Cancel', command=self.cancel).pack(side='right')
+
+        def choose(self, move):
+            if self.parent.move_selection_handler is not None:
+                self.parent.move_selection_handler(move)
+            self.cancel()
+
+        def cancel(self):
+            self.parent.focus_set()
+            self.destroy()
+
     def _on_board_square_click(self, x, y):
         if not self.allow_move_selection or self.game_state is None:
             return
@@ -104,10 +139,14 @@ class ChessBoardView(tk.Frame):
 
         try:
             moves_to_clicked_position = self._possible_moves_by_to_pos[pos]
-            move = moves_to_clicked_position[0]
 
-            if self.move_selection_handler is not None:
-                self.move_selection_handler(move)
+            if len(moves_to_clicked_position) > 1:
+                self.PawnPromotionDialog(self, self.gui, moves_to_clicked_position)
+            else:
+                move = moves_to_clicked_position[0]
+
+                if self.move_selection_handler is not None:
+                    self.move_selection_handler(move)
         except KeyError:
             piece = self.game_state.piece_at(pos)
 
@@ -365,6 +404,8 @@ class ChessBoardGui(tk.Frame):
 class ChessApp(tk.Tk):
     def __init__(self):
         super(ChessApp, self).__init__()
+
+        self.title("Chess game")
 
         self.gui = ChessBoardGui(self)
         self.gui.pack()
