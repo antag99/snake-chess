@@ -10,6 +10,9 @@ import ai
 import functools
 import tkinter as tk
 import tkinter.font
+import threading
+import collections
+import time
 
 
 import arbiter
@@ -19,14 +22,34 @@ class GUIGameWatcher(arbiter.GameWatcher):
     def __init__(self, gui, players_to_follow) -> None:
         self.gui = gui
         self.players_to_follow = players_to_follow
+        self.last_update_timestamp = None
+        self.min_time_since_last_update = 0.8
 
     def on_game_state_changed(self, arbiter):
-        self.gui.view.game_state = arbiter.game_state
-        self.gui.game_status_frame.update_to_game_state(arbiter.game_state)
-        if arbiter.game_state.playing_team in self.players_to_follow:
-            self.gui.view.set_to_view_of_team(arbiter.game_state.playing_team)
-        else:
-            self.gui.view.set_to_view_of_team(self.players_to_follow[0])
+        game_state = arbiter.game_state
+
+        def ui_task():
+            if game_state.playing_team in self.players_to_follow:
+                self.gui.view.set_to_view_of_team(game_state.playing_team)
+            else:
+                self.gui.view.set_to_view_of_team(self.players_to_follow[0])
+
+            self.gui.view.game_state = game_state
+
+            if self.gui.game_status_frame:  # if game has not been canceled
+                self.gui.game_status_frame.update_to_game_state(game_state)
+
+        self.gui.run_on_ui_thread(ui_task)
+
+        # wait on this thread to allow the GUI thread to catch up (GUI updates are quite slow.)
+        timestamp = time.monotonic()
+        time_since_last_update = self.last_update_timestamp and (timestamp - self.last_update_timestamp) or self.min_time_since_last_update
+        self.last_update_timestamp = timestamp
+        time.sleep(max(0, self.min_time_since_last_update - time_since_last_update))
+
+        # this ensures we do not overload the UI thread, which will end up never returning until game is finished.
+        with self.gui.ui_thread_done:
+            self.gui.ui_thread_done.wait()
 
 
 class GUIHumanChessPlayer(arbiter.ChessPlayer):
@@ -50,40 +73,50 @@ class GUIHumanChessPlayer(arbiter.ChessPlayer):
         self.cancel_turn_to_act(arbiter)
 
     def on_turn_to_act(self, arbiter):
-        self.gui.view.allow_move_selection = True
-        self.gui.view.move_selection_handler = functools.partial(self._move_selection_handler, arbiter)
+        def ui_task():
+            self.gui.view.allow_move_selection = True
+            self.gui.view.move_selection_handler = functools.partial(self._move_selection_handler, arbiter)
 
-        self.offer_draw = False
-        self.gui.set_offer_draw_handler = self._set_offer_draw_handler
-        self.gui.claim_draw_handler = functools.partial(self._claim_draw_handler, arbiter)
-        self.gui.surrender_handler = functools.partial(self._surrender_handler, arbiter)
-        self.gui.game_status_frame.set_act_buttons_active(True)
+            self.offer_draw = False
+            self.gui.set_offer_draw_handler = self._set_offer_draw_handler
+            self.gui.claim_draw_handler = functools.partial(self._claim_draw_handler, arbiter)
+            self.gui.surrender_handler = functools.partial(self._surrender_handler, arbiter)
+            self.gui.game_status_frame.set_act_buttons_active(True)
+        self.gui.run_on_ui_thread(ui_task)
 
     def cancel_turn_to_act(self, arbiter):
-        self.gui.view.allow_move_selection = False
-        self.gui.view.reset_move_selection()
-        self.gui.clear_handlers()
-        self.gui.game_status_frame.set_act_buttons_active(False)
+        def ui_task():
+            self.gui.view.allow_move_selection = False
+            self.gui.view.reset_move_selection()
+            self.gui.clear_handlers()
+            self.gui.game_status_frame.set_act_buttons_active(False)
+        self.gui.run_on_ui_thread(ui_task)
 
 
 class ChessBoardView(tk.Frame):
+    class Square:
+        def __init__(self, button):
+            self.button = button
+            self.bg_color = None
+            self.piece_team_and_symbol = None
 
     def __init__(self, parent, gui):
         super(ChessBoardView, self).__init__(parent)
         self.gui = gui
 
-        self._chess_piece_button_by_ui_grid_pos = dict()
-        self._chess_piece_button_by_pos = dict()
+        self._chess_square_by_ui_grid_pos = dict()
+        self._chess_square_by_pos = dict()
 
         for x in range(0, 8):
             for y in range(0, 8):
                 button = tk.Button(self, image=self.gui.empty_image, borderwidth=0)
                 button.grid(column=x, row=y, padx=0, pady=0)
-                self._chess_piece_button_by_ui_grid_pos[(x, y)] = button
+                self._chess_square_by_ui_grid_pos[(x, y)] = self.Square(button=button)
 
         self.allow_move_selection = False
         self.move_selection_handler = None
         self._game_state = None
+        self._view_of_team = None
 
         self.set_to_view_of_team('W')
         self._possible_moves_by_to_pos = dict()
@@ -156,9 +189,10 @@ class ChessBoardView(tk.Frame):
                 self.reset_move_selection()
 
     def _set_square_color(self, pos, bg_color):
-        button = self._chess_piece_button_by_pos[pos]
-        button['background'] = bg_color
-        button['activebackground'] = bg_color
+        square = self._chess_square_by_pos[pos]
+        if square.bg_color != bg_color:
+            square.button['background'] = bg_color
+            square.button['activebackground'] = bg_color
 
     def _reset_square_colors(self):
         for x in range(0, 8):
@@ -170,11 +204,16 @@ class ChessBoardView(tk.Frame):
         self._reset_square_colors()
 
     def set_to_view_of_team(self, view_of_team):
+        if self._view_of_team == view_of_team:
+            return
+        self._view_of_team = view_of_team
+
         for x in range(0, 8):
             for y in range(0, 8):
-                self._chess_piece_button_by_pos[(7 - x if view_of_team == 'B' else x,
-                                                 7 - y if view_of_team == 'W' else y)] =\
-                    self._chess_piece_button_by_ui_grid_pos[(x, y)]
+                square = self._chess_square_by_ui_grid_pos[(x, y)]
+                board_pos = (7 - x if view_of_team == 'B' else x, 7 - y if view_of_team == 'W' else y)
+                self._chess_square_by_pos[board_pos] = square
+                square.button['command'] = functools.partial(self._on_board_square_click, board_pos[0], board_pos[1])
         self._reset_square_colors()
         self._update_chess_piece_images()
 
@@ -182,12 +221,15 @@ class ChessBoardView(tk.Frame):
         for x in range(0, 8):
             for y in range(0, 8):
                 pos = (x, y)
-                button = self._chess_piece_button_by_pos[pos]
-                button['command'] = functools.partial(self._on_board_square_click, x, y)
+                square = self._chess_square_by_pos[pos]
                 piece = self.game_state and self.game_state.piece_at(pos)
-                piece_image = self.gui.piece_images_by_team_and_symbol[piece.team][piece.symbol] \
-                    if piece is not None else self.gui.empty_image
-                button['image'] = piece_image
+                team_and_symbol = piece and piece.team + piece.symbol
+
+                if square.piece_team_and_symbol != team_and_symbol:
+                    square.piece_team_and_symbol = team_and_symbol
+                    piece_image = self.gui.piece_images_by_team_and_symbol[piece.team][piece.symbol] \
+                        if piece is not None else self.gui.empty_image
+                    square.button['image'] = piece_image
 
         self.pack()
 
@@ -373,6 +415,9 @@ class ChessBoardGui(tk.Frame):
         self.surrender_handler = None
         self.claim_draw_handler = None
         self.clear_handlers()
+        self.ui_tasks = collections.deque()
+        self.ui_thread_done = threading.Condition()
+        self._run_tkinter_tasks()
 
     def clear_handlers(self):
         self.set_offer_draw_handler = lambda _: None
@@ -398,7 +443,23 @@ class ChessBoardGui(tk.Frame):
         self.arbiter = arbiter.Arbiter(chess_players)
         players_to_follow = filter(lambda t: isinstance(chess_players[t], GUIHumanChessPlayer), "WB")
         self.arbiter.watchers.append(GUIGameWatcher(self, list(players_to_follow) or "W"))
-        self.arbiter.start_game()
+        self.run_on_new_thread(self.arbiter.start_game)
+
+    def run_on_new_thread(self, task):
+        thread = threading.Thread(group=None, name=None, target=task)
+        thread.start()
+
+    def run_on_ui_thread(self, task):
+        self.ui_tasks.append(task)
+
+    def _run_tkinter_tasks(self):
+        while len(self.ui_tasks) > 0:
+            self.ui_tasks.popleft()()
+
+        with self.ui_thread_done:
+            self.ui_thread_done.notify()
+
+        self.after(1, self._run_tkinter_tasks)
 
 
 class ChessApp(tk.Tk):

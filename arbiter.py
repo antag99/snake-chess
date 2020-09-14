@@ -2,6 +2,7 @@
 import threading
 import chess
 import functools
+import time
 
 
 class ChessPlayer:
@@ -50,7 +51,7 @@ class Arbiter:
         self.players = dict(players)
         self.watchers = []
         self._game_stopped = threading.Event()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def _notify_watchers(self):
         for watcher in self.watchers:
@@ -81,6 +82,8 @@ class Arbiter:
             if is_legal_act:  # check that acts players try to perform are legal.
                 self.game_state = self.game_state.copy_with_act_applied(act)
                 self._notify_watchers()
+
+            time.sleep(0)
 
             if not is_legal_act or not self.game_state.compute_result().is_finished:
                 self.players[self.game_state.playing_team].on_turn_to_act(self)

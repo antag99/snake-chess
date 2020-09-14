@@ -3,6 +3,7 @@ from chess import *
 
 from random import Random
 from multiprocessing import Pool
+import threading
 
 
 class AIPlayer:
@@ -94,11 +95,12 @@ class PawnsAndQueensAIPlayer(AIPlayer):
     def __init__(self):
         self.random = Random()
         self.pool = None
+        self.pool_op = threading.RLock()
 
     def abort_computation(self):
-        pool = self.pool
-        if pool:
-            pool.terminate()
+        with self.pool_op:
+            if self.pool:
+                self.pool.terminate()
 
     def pick_act(self, game_state):
         ai_team = game_state.playing_team
@@ -115,9 +117,13 @@ class PawnsAndQueensAIPlayer(AIPlayer):
 
         # score them all (illegal moves get score 'None')
 
-        with Pool(8) as pool:
-            self.pool = pool
-            move_with_score = zip(moves, self.pool.map(scorer.score_move, moves))
+        with self.pool_op:
+            self.pool = Pool(8)
+
+        move_with_score = zip(moves, self.pool.map(scorer.score_move, moves))
+
+        with self.pool_op:
+            self.pool.close()
             self.pool = None
 
         # filter out illegal moves
